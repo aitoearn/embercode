@@ -25,6 +25,10 @@ class ContextManager(
         return totalTokens >= usable
     }
 
+    /** Rough token estimate of a whole message list, used to seed the overflow check before the
+     *  first turn reports real usage (a fresh AgentLoop starts with lastUsageTotal=0). */
+    fun estimatedSize(messages: List<ChatMessage>): Long = messages.sumOf { estimateTokens(it).toLong() }
+
     suspend fun compact(model: String, messages: List<ChatMessage>): List<ChatMessage> {
         val cut = findCutPoint(messages)
         if (cut <= 0) return messages // nothing safely summarizable
@@ -76,7 +80,7 @@ class ContextManager(
 
     /** Returns the summary, or null if the provider failed or produced nothing (caller keeps the original). */
     private suspend fun summarize(model: String, head: List<ChatMessage>): String? {
-        val request = ChatRequest(model = model, system = SUMMARY_PROMPT, messages = head, stream = true)
+        val request = ChatRequest(model = model, system = SUMMARY_PROMPT, messages = head)
         val out = StringBuilder()
         var failed = false
         provider.stream(request).collect { event ->

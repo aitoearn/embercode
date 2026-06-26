@@ -4,15 +4,14 @@ import kotlinx.serialization.json.JsonObject
 
 /**
  * Provider-agnostic request. Not @Serializable: each provider serializes it
- * into its own wire shape (see RequestBodyBuilders). `stream` defaults true -
- * an on-device coding agent always wants incremental output.
+ * into its own wire shape (see RequestBodyBuilders). The provider always streams
+ * (an on-device coding agent wants incremental output), so the builders hardcode it.
  */
 data class ChatRequest(
     val model: String,
     val system: String? = null,
     val messages: List<ChatMessage>,
     val tools: List<ToolDef> = emptyList(),
-    val stream: Boolean = true,
     val reasoningEffort: ReasoningEffort = ReasoningEffort.DEFAULT,
     val maxTokens: Int? = null,
     /** Stable per-session key for OpenAI-family automatic prompt caching. */

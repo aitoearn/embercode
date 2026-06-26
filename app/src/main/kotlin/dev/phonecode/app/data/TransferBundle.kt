@@ -1,7 +1,6 @@
 package dev.phonecode.app.data
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -16,15 +15,15 @@ import java.util.zip.ZipOutputStream
  * (e.g. from SAF ContentResolver URIs) and the app's filesDir.
  *
  * Bundle layout (version 1): manifest.json, sessions/<id>.json, projects.json, model_prefs.json,
- * config/providers.json. Import only restores entries matching this whitelist - anything with
- * path traversal ("..", absolute paths, backslashes) or an unknown name is skipped.
+ * app_settings.json, config/providers.json. Import only restores entries matching this whitelist -
+ * anything with path traversal ("..", absolute paths, backslashes) or an unknown name is skipped.
  */
 object TransferBundle {
 
     @Serializable
     private data class Manifest(val app: String = "phonecode", val version: Int = 1, val exportedAt: Long)
 
-    private val json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
+    private val json = storeJson
 
     /** Fixed single-file entries; entry name doubles as the path relative to filesDir. */
     private val KNOWN_FILES = listOf("projects.json", "model_prefs.json", "app_settings.json", "config/providers.json")

@@ -1,7 +1,6 @@
 package dev.phonecode.app.data
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
@@ -18,7 +17,7 @@ class ModelPrefsStore(private val file: File) {
         val disabledProviders: List<String> = emptyList(),
     )
 
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = storeJson
 
     private fun load(): Prefs =
         if (file.exists()) runCatching { json.decodeFromString(Prefs.serializer(), file.readText()) }.getOrDefault(Prefs()) else Prefs()

@@ -6,13 +6,6 @@ import kotlinx.serialization.decodeFromString
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-/** A provider and its models, shaped for the provider-grouped model picker. */
-data class ProviderGroup(
-    val providerId: String,
-    val displayName: String,
-    val models: List<ModelInfo>,
-)
-
 enum class Source { NETWORK, CACHE, BUNDLED }
 
 /** Result of a catalog load. [staleAgeMillis] is non-null only when serving a stale cache. */
@@ -63,12 +56,6 @@ class CatalogLoader(
         }
         error("models.dev catalog unavailable: network failed and no usable cache or bundled fallback")
     }
-
-    /** Groups a catalog for the picker, providers and models sorted by display name. */
-    fun grouped(catalog: Catalog): List<ProviderGroup> =
-        catalog.entries
-            .map { (id, info) -> ProviderGroup(id, info.name, info.models.values.sortedBy { it.name }) }
-            .sortedBy { it.displayName }
 
     private fun tryParse(text: String): Catalog? =
         runCatching { catalogJson.decodeFromString<Catalog>(text) }.getOrNull()

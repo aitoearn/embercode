@@ -195,26 +195,25 @@ fun MarkdownBlocks(
     val colors = MaterialTheme.colorScheme
     val blocks = remember(text) { parseBlocks(text) }
 
-    // ChatGPT's streaming feel (chatgpt-motion.md): each arriving chunk fades in over ~90ms.
-    // Only the GROWING block pulses - settled blocks above it stay rock-still.
-    val chunkAlpha = remember { androidx.compose.animation.core.Animatable(1f) }
+    // ChatGPT streaming feel (chatgpt-motion.md): freshly-arrived text fades in over ~140ms. Only
+    // the trailing run of the growing block fades (see blockInline) - settled text never flickers.
+    val tailAlpha = remember { androidx.compose.animation.core.Animatable(1f) }
     LaunchedEffect(text.length, streaming) {
         if (streaming) {
-            chunkAlpha.snapTo(0.6f)
-            chunkAlpha.animateTo(1f, androidx.compose.animation.core.tween(90, easing = androidx.compose.animation.core.LinearEasing))
+            tailAlpha.snapTo(0.2f)
+            tailAlpha.animateTo(1f, androidx.compose.animation.core.tween(140, easing = androidx.compose.animation.core.LinearEasing))
+        } else {
+            tailAlpha.snapTo(1f)
         }
     }
 
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(7.dp)) {
         blocks.forEachIndexed { index, block ->
             val tail = if (index == blocks.lastIndex) caret else ""
-            val blockModifier = if (streaming && index == blocks.lastIndex) {
-                Modifier.graphicsLayer { alpha = chunkAlpha.value }
-            } else Modifier
-            Box(blockModifier) {
-                when (block) {
+            val fade = if (streaming && index == blocks.lastIndex) tailAlpha.value else 1f
+            when (block) {
                 is MdBlock.Paragraph ->
-                    Text(remember(block, tail, styles) { inlineMarkdown(block.text + tail, styles) }, style = style, color = color)
+                    Text(blockInline(block.text, tail, styles, color, fade), style = style, color = color)
                 is MdBlock.Heading -> {
                     val headingStyle = when (block.level) {
                         1 -> MaterialTheme.typography.titleLarge
@@ -222,7 +221,7 @@ fun MarkdownBlocks(
                         else -> MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
                     }
                     Text(
-                        remember(block, tail, styles) { inlineMarkdown(block.text + tail, styles) },
+                        blockInline(block.text, tail, styles, color, fade),
                         style = headingStyle,
                         color = color,
                         modifier = Modifier.padding(top = if (index == 0) 0.dp else 5.dp),
@@ -230,16 +229,16 @@ fun MarkdownBlocks(
                 }
                 is MdBlock.Bullet -> Row(Modifier.padding(start = 4.dp)) {
                     Text("•", style = style, color = colors.secondary, modifier = Modifier.width(16.dp))
-                    Text(remember(block, tail, styles) { inlineMarkdown(block.text + tail, styles) }, style = style, color = color)
+                    Text(blockInline(block.text, tail, styles, color, fade), style = style, color = color)
                 }
                 is MdBlock.Numbered -> Row(Modifier.padding(start = 4.dp)) {
                     Text("${block.number}.", style = style, color = colors.secondary, modifier = Modifier.width(22.dp))
-                    Text(remember(block, tail, styles) { inlineMarkdown(block.text + tail, styles) }, style = style, color = color)
+                    Text(blockInline(block.text, tail, styles, color, fade), style = style, color = color)
                 }
                 is MdBlock.Quote -> Row(Modifier.height(IntrinsicSize.Min)) {
                     Box(Modifier.width(2.dp).fillMaxHeight().background(colors.outlineVariant))
                     Text(
-                        remember(block, tail, styles) { inlineMarkdown(block.text + tail, styles) },
+                        blockInline(block.text, tail, styles, colors.secondary, fade),
                         style = style,
                         color = colors.secondary,
                         modifier = Modifier.padding(start = 10.dp),
@@ -248,9 +247,25 @@ fun MarkdownBlocks(
                 MdBlock.Divider -> Box(
                     Modifier.fillMaxWidth().padding(vertical = 2.dp).height(1.dp).background(colors.outlineVariant),
                 )
-                }
             }
         }
         if (blocks.isEmpty() && caret.isNotEmpty()) Text(caret, style = style, color = colors.secondary)
+    }
+}
+
+/**
+ * Inline markdown for one block. While streaming, the trailing run of rendered characters fades via
+ * [fade] (1f = no fade), so only the newest text animates in and settled text stays at full alpha.
+ */
+@Composable
+private fun blockInline(text: String, tail: String, styles: MdStyles, color: Color, fade: Float): AnnotatedString {
+    val base = remember(text, tail, styles) { inlineMarkdown(text + tail, styles) }
+    if (fade >= 1f) return base
+    val cut = (base.length - (14 + tail.length)).coerceAtLeast(0)
+    return remember(base, cut, fade, color) {
+        buildAnnotatedString {
+            append(base)
+            if (cut < base.length) addStyle(SpanStyle(color = color.copy(alpha = fade)), cut, base.length)
+        }
     }
 }

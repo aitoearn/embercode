@@ -43,16 +43,6 @@ class CatalogLoaderTest {
         assertEquals(200000L, model.limit!!.context)
     }
 
-    @Test fun groupedSortsProvidersAndModels() {
-        val loader = CatalogLoader(OkHttpClient(), FakeCache(fixture, age = 1000))
-        val groups = loader.grouped(catalogJson.decodeFromString(fixture))
-        assertEquals(listOf("Anthropic", "OpenRouter"), groups.map { it.displayName })
-        assertEquals(
-            listOf("A Model", "Z Model"),
-            groups.first { it.providerId == "openrouter" }.models.map { it.name },
-        )
-    }
-
     @Test fun bundledFallbackWhenNoCacheAndNetworkFails() = runBlocking {
         val server = MockWebServer()
         server.enqueue(MockResponse().setResponseCode(500))

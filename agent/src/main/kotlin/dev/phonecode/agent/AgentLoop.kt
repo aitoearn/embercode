@@ -6,7 +6,6 @@ import dev.phonecode.provider.domain.ChatRequest
 import dev.phonecode.provider.domain.LlmProvider
 import dev.phonecode.provider.domain.MessagePart
 import dev.phonecode.provider.domain.Role
-import dev.phonecode.provider.domain.StopReason
 import dev.phonecode.provider.domain.StreamEvent
 import dev.phonecode.provider.domain.ToolDef
 import dev.phonecode.tools.Tool
@@ -73,7 +72,11 @@ class AgentLoop(
                 val mode = modeProvider()
                 val activeTools = visibleTools(mode)
                 val toolDefs = activeTools.map { ToolDef(it.name, it.description, it.parameters) }
-                if (contextManager.isOverflow(lastUsageTotal, settings.contextLimit)) {
+                // A fresh AgentLoop starts at lastUsageTotal=0, so seed from a size estimate of the
+                // accumulated history; otherwise compaction never fires on the first turn and an
+                // oversized restored session is sent at full size (context-length-exceeded).
+                val seenTokens = maxOf(lastUsageTotal, contextManager.estimatedSize(messages))
+                if (contextManager.isOverflow(seenTokens, settings.contextLimit)) {
                     val before = messages.size
                     val compacted = contextManager.compact(settings.model, messages.toList())
                     if (compacted.size < before) {
@@ -100,13 +103,13 @@ class AgentLoop(
                     messages = wire,
                     tools = if (lastStep) emptyList() else toolDefs,
                     reasoningEffort = settings.reasoningEffort,
+                    maxTokens = settings.maxOutput?.toInt(),
                     sessionId = config.sessionId,
                 )
 
                 val text = StringBuilder()
                 val reasoning = StringBuilder()
                 val toolCalls = sortedMapOf<Int, ToolCallAccumulator>()
-                var stop: StopReason? = null
                 var failure: String? = null
 
                 provider.stream(request).collect { event ->
@@ -125,7 +128,7 @@ class AgentLoop(
                                 (event.cacheRead ?: 0) + (event.cacheWrite ?: 0) + (event.reasoning ?: 0)
                             emit(AgentEvent.Usage(event.input, event.output))
                         }
-                        is StreamEvent.Done -> stop = event.stopReason
+                        is StreamEvent.Done -> Unit
                         is StreamEvent.Failed -> failure = event.message
                     }
                 }
@@ -138,7 +141,11 @@ class AgentLoop(
                     return@flow
                 }
 
-                if (stop == StopReason.TOOL_USE && toolCalls.isNotEmpty()) {
+                // Gate on the presence of accumulated calls, NOT the stop reason: assistantParts always
+                // persists tool_use blocks when toolCalls is non-empty, and every tool_use MUST be answered
+                // by a tool_result or the next request is rejected. A non-TOOL_USE stop that still carried
+                // tool calls (gateway quirk) would otherwise orphan them. No calls -> nothing to execute.
+                if (toolCalls.isNotEmpty()) {
                     if (isDoomLoop(recentSignatures, toolCalls.values)) {
                         if (!context.requestPermission("doom_loop", "repeating the same tool call(s)")) {
                             emit(AgentEvent.Error("stopped: repeated identical tool calls")); return@flow
@@ -149,7 +156,6 @@ class AgentLoop(
                     messages += ChatMessage(Role.USER, resultParts)
                     hasMoreToolCalls = true
                 } else {
-                    // TOOL_USE with no accumulated calls (a malformed turn) ends the inner loop, never loops.
                     hasMoreToolCalls = false
                 }
                 pending = steering.poll().map(::steeringMessage)

@@ -52,6 +52,25 @@ class ApplyPatchToolTest {
         assertEquals("hello\nworld\n", file("greeting.txt").readText())
     }
 
+    @Test fun toleratesBlankLineAfterAddSection() = runBlocking {
+        // A blank separator after an Add body must end the body, not fail the '+'-prefix check.
+        val patch = """
+            *** Begin Patch
+            *** Add File: a.txt
+            +alpha
+
+            *** Add File: b.txt
+            +beta
+            *** End Patch
+        """.trimIndent()
+
+        val result = tool.execute(patchArgs(patch), Ctx())
+
+        assertFalse(result.output, result.isError)
+        assertEquals("alpha\n", file("a.txt").readText())
+        assertEquals("beta\n", file("b.txt").readText())
+    }
+
     @Test fun updatesAFileWithAHunk() = runBlocking {
         file("app.kt").writeText("fun main() {\n    println(\"hi\")\n}\n")
         val patch = """

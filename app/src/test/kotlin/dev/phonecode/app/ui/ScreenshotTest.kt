@@ -149,7 +149,7 @@ class ScreenshotTest {
     /** Dismisses the tools sheet from its MAIN panel: the M3 sheet's window is out of reach of
      *  the activity back dispatcher, so we select the attach row (SAF intent is inert here). */
     private fun dismissToolsSheet() {
-        compose.onNodeWithText("Photo / file").performClick()
+        compose.onNodeWithText("Photo or file").performClick()
         compose.waitForIdle()
     }
 
@@ -160,12 +160,6 @@ class ScreenshotTest {
 
         compose.onNodeWithContentDescription("Tools").performClick()
         shootScreen("02-tools-menu")
-        compose.onAllNodesWithText("Context").onLast().performClick()
-        shootScreen("04-context-popover")
-        compose.onNodeWithContentDescription("Back").performClick()
-        compose.onAllNodesWithText("Git").onLast().performClick()
-        shootScreen("05-git-popover")
-        compose.onNodeWithContentDescription("Back").performClick()
         dismissToolsSheet()
 
         // Model sheet from the composer pill; re-selecting the current model closes it.

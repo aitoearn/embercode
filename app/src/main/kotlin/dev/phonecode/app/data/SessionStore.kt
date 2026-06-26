@@ -5,7 +5,6 @@ import dev.phonecode.provider.domain.MessagePart
 import dev.phonecode.provider.domain.Role
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 
 /**
@@ -35,10 +34,37 @@ data class PersistedSession(
     val updatedAt: Long,
     val messages: List<PersistedMessage>,
     val projectId: String? = null,
+    val pinned: Boolean = false,
+    val archived: Boolean = false,
 )
 
-/** Lightweight catalog row for the sessions list (no message bodies). */
-data class SessionMeta(val id: String, val title: String, val updatedAt: Long, val projectId: String? = null)
+/** Lightweight catalog row for the sessions list (one-line preview, no full message bodies). */
+data class SessionMeta(
+    val id: String,
+    val title: String,
+    val updatedAt: Long,
+    val projectId: String? = null,
+    val preview: String = "",
+    val pinned: Boolean = false,
+    val archived: Boolean = false,
+)
+
+/** Collapse basic markdown to plain text so drawer previews read clean (no **, *, `, #, >, lists, links). */
+private fun stripMarkdown(s: String): String =
+    s.replace(Regex("```[\\s\\S]*?```"), " ")                              // fenced code blocks
+        .replace(Regex("`([^`]*)`"), "$1")                                // inline code
+        .replace(Regex("!?\\[([^\\]]*)]\\([^)]*\\)"), "$1")               // links / images -> text
+        .replace(Regex("^\\s{0,3}#{1,6}\\s+", RegexOption.MULTILINE), "") // headings
+        .replace(Regex("^\\s{0,3}>\\s?", RegexOption.MULTILINE), "")      // blockquotes
+        .replace(Regex("^\\s*([-*+]|\\d+\\.)\\s+", RegexOption.MULTILINE), "") // list markers
+        .replace(Regex("\\*\\*|__|[*_~]"), "")                            // bold / italic / strike markers
+        .replace(Regex("\\s+"), " ")                                      // collapse whitespace incl. newlines
+        .trim()
+
+/** One-line preview for the drawer: the last message's first text part, stripped of markdown and trimmed. */
+private fun previewOf(s: PersistedSession): String =
+    s.messages.lastOrNull()?.parts?.firstNotNullOfOrNull { (it as? PersistedPart.Text)?.text }
+        ?.let { stripMarkdown(it.take(500)).take(80) } ?: "" // take() first so the regex never runs over a multi-MB body
 
 fun ChatMessage.toPersisted(): PersistedMessage =
     PersistedMessage(if (role == Role.USER) PersistedRole.USER else PersistedRole.ASSISTANT, parts.map { it.toPersisted() })
@@ -61,49 +87,80 @@ private fun PersistedPart.toDomain(): MessagePart = when (this) {
 }
 
 class SessionStore(private val dir: File) {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val json = storeJson
+
+    // In-memory catalog (id -> meta) so the hot list() - rebuilt after every turn and every mutation -
+    // never re-parses every session file's full message bodies. Authoritative for this process; the
+    // on-device store has a single writer. ponytail: single-process cache; if a second writer ever
+    // appears, drop it and re-scan. All access serializes on LOCK, which also closes the read-modify-write
+    // races in the setX/rename helpers (concurrent load+save no longer lose each other's updates).
+    private var metaCache: MutableMap<String, SessionMeta>? = null
 
     init {
         dir.mkdirs()
     }
 
+    private inline fun <T> locked(block: () -> T): T = synchronized(LOCK, block)
+
     // Filenames are derived from a sanitized id; the app generates collision-free ids (e.g. "session-<epochMs>").
     private fun fileFor(id: String): File = File(dir, id.replace(UNSAFE, "_") + ".json")
 
-    fun save(session: PersistedSession) {
-        dir.mkdirs()
-        fileFor(session.id).writeText(json.encodeToString(PersistedSession.serializer(), session))
+    private fun metaOf(s: PersistedSession): SessionMeta =
+        SessionMeta(s.id, s.title, s.updatedAt, s.projectId, previewOf(s), s.pinned, s.archived)
+
+    /** Lazily scan the dir once into [metaCache] (the only full-parse pass); later calls reuse it. */
+    private fun cache(): MutableMap<String, SessionMeta> = metaCache ?: run {
+        val map = LinkedHashMap<String, SessionMeta>()
+        (dir.listFiles { f -> f.isFile && f.extension == "json" } ?: emptyArray()).forEach { file ->
+            runCatching { json.decodeFromString(PersistedSession.serializer(), file.readText()) }.getOrNull()
+                ?.let { map[it.id] = metaOf(it) }
+        }
+        metaCache = map
+        map
     }
 
-    fun load(id: String): PersistedSession? =
+    fun save(session: PersistedSession): Unit = locked {
+        dir.mkdirs()
+        fileFor(session.id).writeText(json.encodeToString(PersistedSession.serializer(), session))
+        cache()[session.id] = metaOf(session)
+    }
+
+    fun load(id: String): PersistedSession? = locked {
         fileFor(id).takeIf { it.exists() }?.let { file ->
             runCatching { json.decodeFromString(PersistedSession.serializer(), file.readText()) }.getOrNull()
         }
+    }
 
-    /** All sessions, newest first, skipping any unreadable/corrupt file. */
-    fun list(): List<SessionMeta> =
-        (dir.listFiles { f -> f.isFile && f.extension == "json" } ?: emptyArray())
-            .mapNotNull { file ->
-                runCatching { json.decodeFromString(PersistedSession.serializer(), file.readText()) }.getOrNull()
-                    ?.let { SessionMeta(it.id, it.title, it.updatedAt, it.projectId) }
-            }
-            .sortedByDescending { it.updatedAt }
+    /** All sessions, newest first, served from the in-memory catalog (no per-call file parse). */
+    fun list(): List<SessionMeta> = locked { cache().values.sortedByDescending { it.updatedAt } }
 
-    fun delete(id: String) {
+    fun delete(id: String): Unit = locked {
         fileFor(id).delete()
+        cache().remove(id)
     }
 
     /** Rename a stored session in place (no-op if it doesn't exist). */
-    fun rename(id: String, title: String) {
+    fun rename(id: String, title: String): Unit = locked {
         load(id)?.let { save(it.copy(title = title)) }
     }
 
     /** Reassign a stored session to a project (null = unsorted). */
-    fun setProject(id: String, projectId: String?) {
+    fun setProject(id: String, projectId: String?): Unit = locked {
         load(id)?.let { save(it.copy(projectId = projectId)) }
+    }
+
+    /** Pin/unpin a stored session (pinned chats float to the top of the drawer). */
+    fun setPinned(id: String, pinned: Boolean): Unit = locked {
+        load(id)?.let { save(it.copy(pinned = pinned)) }
+    }
+
+    /** Archive/unarchive a stored session (archived chats drop out of the main list). */
+    fun setArchived(id: String, archived: Boolean): Unit = locked {
+        load(id)?.let { save(it.copy(archived = archived)) }
     }
 
     private companion object {
         val UNSAFE = Regex("[^a-zA-Z0-9_-]")
+        val LOCK = Any()
     }
 }

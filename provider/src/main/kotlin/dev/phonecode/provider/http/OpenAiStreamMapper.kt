@@ -2,7 +2,6 @@ package dev.phonecode.provider.http
 
 import dev.phonecode.provider.domain.StopReason
 import dev.phonecode.provider.domain.StreamEvent
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
@@ -15,7 +14,6 @@ import kotlinx.serialization.json.jsonObject
  * with `finish_reason`. Once a terminal `Failed` is produced, no further events emit.
  */
 internal class OpenAiStreamMapper : SseStreamMapper {
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val startedTools = sortedSetOf<Int>()
     private val endedTools = sortedSetOf<Int>()
     private var stopReason: StopReason = StopReason.END_TURN
@@ -27,7 +25,7 @@ internal class OpenAiStreamMapper : SseStreamMapper {
         if (data.isEmpty() || data == "[DONE]") return emptyList()
 
         val obj = try {
-            json.parseToJsonElement(data).jsonObject
+            streamJson.parseToJsonElement(data).jsonObject
         } catch (e: Exception) {
             terminated = true
             return listOf(StreamEvent.Failed("openai parse error: ${e.message}"))

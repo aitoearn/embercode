@@ -75,7 +75,9 @@ object BuiltInPresets {
     val opencodeGo = ProviderPreset(
         id = "opencode-go",
         displayName = "OpenCode Go",
-        baseUrl = "https://opencode.ai/go/v1",
+        // OpenCode Go's OpenAI-compatible API lives under /zen/go/v1; the old /go/v1 hit the
+        // website 404 because Go is served beneath the Zen path, not at the site root.
+        baseUrl = "https://opencode.ai/zen/go/v1",
         wireFormat = WireFormat.OPENAI_COMPAT,
         authScheme = AuthScheme.BEARER,
     )

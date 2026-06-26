@@ -160,16 +160,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         defaultFileTools() + ApplyPatchTool() + ExternalDirectoryTool() + QuestionTool() +
             PlanExitTool { setAgentMode(AgentMode.BUILD) } + todoTools(todoStore) +
             WebFetchTool(http) + WebSearchTool(http) + TaskTool(::runSubagent) + gitTools { gitCredentials() } +
-            // Real terminal access: busybox userland over Android's toybox (round-4: "fix the
-            // environment, fully") - sandbox-scoped, permission-gated like every mutating tool.
-            // Providers are lazy: the symlink bootstrap runs off-main on first use (prewarmed below).
-            dev.phonecode.tools.shell.ShellTool({ userland.shell }, { userland.env }) +
-            // Phone control: launch/share/clipboard/notify/torch/volume/device info - every
-            // action passes the permission gate (device feedback: "phone control... well made").
-            PhoneTool(app) +
-            // Screen navigation (round-3): read/tap/type/swipe via the user-enabled
-            // accessibility service; per-action permission gate on top.
-            ScreenTool(app)
+            // Real terminal access: busybox userland over Android's toybox, transparently upgrading to a
+            // full Alpine Linux (proot) once its rootfs is set up - sandbox-scoped, permission-gated like
+            // every mutating tool. Providers are dynamic: shell()/shellEnv() re-resolve each call so the
+            // shell flips from busybox to Linux the moment the background rootfs setup finishes.
+            dev.phonecode.tools.shell.ShellTool({ userland.shell() }, { userland.shellEnv() })
     @Volatile private var mcpTools: List<Tool> = emptyList()
     @Volatile private var discoveredSkills: List<SkillManifest> = emptyList()
     // Registry is replaced wholesale (not mutated) so send()/runSubagent always read a consistent snapshot.
@@ -271,11 +266,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             val options = catalogToOptions(result.catalog)
             if (options.isNotEmpty()) {
                 _state.update { s ->
+                    // The catalog only covers built-in presets, so preserve any custom-provider models
+                    // reloadProviders() already folded in - otherwise this reducer clobbers them (and can
+                    // silently re-select a built-in if a custom model was active). Order-independent: if the
+                    // catalog wins the race, reloadProviders re-appends later; if it loses, we keep them here.
+                    val builtinKeys = options.map { "${it.providerId}/${it.modelId}" }.toSet()
+                    val custom = s.models.filter {
+                        it.providerId in customPresets && "${it.providerId}/${it.modelId}" !in builtinKeys
+                    }
+                    val merged = options + custom
                     val current = s.selected
-                    // Re-resolve the active selection against the catalog options (built-in default won't be == any).
-                    val resolved = options.firstOrNull { it.providerId == current?.providerId && it.modelId == current?.modelId }
-                        ?: options.first()
-                    s.copy(models = options, selected = resolved, contextLimit = limitFor(resolved)?.context)
+                    val resolved = merged.firstOrNull { it.providerId == current?.providerId && it.modelId == current?.modelId }
+                        ?: merged.first()
+                    s.copy(models = merged, selected = resolved, contextLimit = limitFor(resolved)?.context)
                 }
             }
         }
@@ -310,9 +313,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         currentProjectId = projectId
         workspace = workspaceFor(projectId)
     }
-
-    /** The active chat's workspace directory (per-project) - the git UI follows this. */
-    fun activeWorkspace(): File = workspace
 
     /**
      * "Auto-branch each task" (Settings > Git > Advanced): when enabled, the first turn of a chat
@@ -471,9 +471,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (id == sessionId) return
         if (_state.value.isRunning) cancel()
         dropIfEmptyPlaceholder()
+        generation++ // bump on the main thread (single-writer for the turn guard), like send/cancel do
         viewModelScope.launch(Dispatchers.IO) {
             val loaded = sessionStore.load(id) ?: return@launch
-            generation++
             val restored = loaded.messages.map { it.toDomain() }
             history = restored
             sessionId = loaded.id
@@ -550,6 +550,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun setSessionPinned(id: String, pinned: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            sessionStore.setPinned(id, pinned)
+            _state.update { it.copy(sessions = sessionStore.list()) }
+        }
+    }
+
+    /** Archiving a chat drops it out of the main list; the active chat falls back to a fresh one. */
+    fun setSessionArchived(id: String, archived: Boolean) {
+        if (archived && id == sessionId) newChat()
+        viewModelScope.launch(Dispatchers.IO) {
+            sessionStore.setArchived(id, archived)
+            _state.update { it.copy(sessions = sessionStore.list()) }
+        }
+    }
+
     fun saveMcpServer(name: String, server: McpServerConfig) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
@@ -600,6 +616,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun configDirPath(): String = configDir.absolutePath
     fun keyFor(providerId: String): String = keyStore.get(providerId).orEmpty()
     fun setKey(providerId: String, key: String) = keyStore.put(providerId, key.trim())
+    /** True when the device Keystore was unavailable and keys are stored UNENCRYPTED (warn on the providers screen). */
+    fun keysStoredInPlaintext(): Boolean = keyStore.usingPlaintextFallback
     fun clearError() = _state.update { it.copy(error = null) }
 
     /** UI-originated user-visible failures (e.g. unreadable attachment) share the error banner. */
@@ -643,8 +661,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun signOutCodex() {
-        listOf("codex.access", "codex.refresh", "codex.expires", "codex.account").forEach { keyStore.put(it, "") }
-        codexAuth.stopLoopback()
+        codexAuth.signOut() // CodexAuth owns its key names - don't duplicate them here (matches signOutGitHub)
         _state.update { it.copy(codexConnected = false) }
     }
 
@@ -1016,20 +1033,30 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun environment(): AgentEnvironment {
         val u = userland
-        val detail = if (u.applets.isNotEmpty()) {
+        val base = if (u.applets.isNotEmpty()) {
             "busybox ash with ${u.applets.size} applets + Android toybox; " +
                 "HOME=${u.env["HOME"]}, TMPDIR=${u.env["TMPDIR"]}, PREFIX=${u.env["PREFIX"]}"
         } else {
             "Android toybox /system/bin/sh (ls, cat, grep, sed, find, ps, tar, ...); " +
                 "HOME=${u.env["HOME"]}, TMPDIR=${u.env["TMPDIR"]}"
         }
+        // Tell the model when a real package manager is reachable, so it knows it CAN install Python etc.
+        val linux = when {
+            u.linuxReady() -> ". A full Alpine Linux is active via proot: run `apk add python3 py3-pip nodejs ...` " +
+                "to install tools; cwd is your workspace and edits land in the same files as the file tools."
+            u.linuxAvailable -> ". A full Alpine Linux (proot) is provisioning in the background; once ready " +
+                "`apk add ...` installs Python/pip/node. Until then this is the busybox toolkit."
+            else -> ""
+        }
         return AgentEnvironment(
             platform = "Android",
             deviceModel = Build.MODEL ?: "unknown",
             osVersion = "API ${Build.VERSION.SDK_INT}",
-            workspacePath = workspace.absolutePath,
+            // Match toolContext's workspaceProvider: a pinned turn workspace takes precedence over the live one,
+            // so the path the prompt reports is the path tools actually write to.
+            workspacePath = (turnWorkspace ?: workspace).absolutePath,
             shellAvailable = true,
-            shellDetail = detail,
+            shellDetail = base + linux,
             configPath = File(getApplication<Application>().filesDir, "config").absolutePath,
         )
     }

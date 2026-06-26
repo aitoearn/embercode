@@ -2,7 +2,6 @@ package dev.phonecode.provider.http
 
 import dev.phonecode.provider.domain.StopReason
 import dev.phonecode.provider.domain.StreamEvent
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
@@ -14,7 +13,6 @@ import kotlinx.serialization.json.jsonObject
  * `Done`/`Failed` is produced, no further events emit.
  */
 internal class AnthropicStreamMapper : SseStreamMapper {
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
     private val toolIndices = mutableSetOf<Int>()
     private val endedTools = mutableSetOf<Int>()
     private var startInput = 0L
@@ -27,7 +25,7 @@ internal class AnthropicStreamMapper : SseStreamMapper {
         val type = raw.event ?: return emptyList() // Anthropic always sends `event:`
         val obj = raw.data.trim().takeIf { it.isNotEmpty() }?.let {
             try {
-                json.parseToJsonElement(it).jsonObject
+                streamJson.parseToJsonElement(it).jsonObject
             } catch (e: Exception) {
                 ended = true
                 return listOf(StreamEvent.Failed("anthropic parse error: ${e.message}"))

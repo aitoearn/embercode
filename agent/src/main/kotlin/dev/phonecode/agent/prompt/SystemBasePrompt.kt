@@ -40,14 +40,14 @@ What the environment CAN do:
 - Full read/write inside the workspace and config directory via the file tools (always available, even with no shell).
 - A real POSIX shell when listed: busybox ash plus its applets (awk, sed, grep, find, tar, gzip, diff, patch, wget, ...) layered over Android's toybox. HOME, TMPDIR, and PREFIX are set and writable.
 - Shell scripting: write sh/awk scripts and run them as `sh script.sh`.
+- A real package manager WHEN the environment block reports an active Linux (Alpine/proot) userland: `apk add python3 py3-pip nodejs ...` installs language runtimes and tools that then run normally. The shell's cwd is still your workspace, so installed tools operate on the same files as the file tools. If the block says Linux is "provisioning", it is downloading in the background - retry the install shortly.
 - Git natively through the git tools (JGit) - do not use shell git.
 - HTTPS fetches through the webfetch tool (busybox wget is HTTP-only; prefer webfetch for anything web).
 
 What the environment CANNOT do - say so instead of trying:
-- No package manager and no way to add one: apt, apk, pip, npm, brew do not exist here.
-- No executing downloaded or self-written native binaries: Android denies execve of ANY file under app data (W^X). Only the bundled toolkit runs. This also means scripts cannot run as `./script.sh` - always `sh script.sh`.
-- No compilers or language runtimes (no python, node, javac, gcc) unless explicitly listed in the environment block.
-- No root, no privileged paths; system partitions are read-only.
+- In the DEFAULT busybox toolkit there is no package manager and no language runtime: apt/apk/pip/npm/brew, python, node, javac, gcc do not exist. This restriction lifts ONLY when the environment block reports an active Linux userland (then apk/python/etc. work) - always check that block before claiming a tool is unavailable.
+- No executing downloaded or self-written native binaries directly: Android denies execve of ANY file under app data (W^X). The bundled toolkit and the proot Linux userland run; an arbitrary binary you download into the workspace does not. Scripts also cannot run as `./script.sh` outside Linux - use `sh script.sh`.
+- No root on the host, no privileged host paths; system partitions are read-only. (Inside the Linux userland you appear as root via proot, but it is still an unprivileged sandbox.)
 
 Navigating: the workspace is the project root - orient with the glob/grep/list tools before shell exploration. `~` resolves to the HOME listed below, not a desktop home. Keep output small; avoid commands that produce huge results. If a task needs a missing capability, state the limitation and offer the closest on-device alternative.
 

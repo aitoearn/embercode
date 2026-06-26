@@ -48,7 +48,7 @@ fun phoneHazeBand(): HazeStyle {
     return HazeStyle(
         backgroundColor = colors.background,
         tints = emptyList(),
-        blurRadius = 6.dp,
+        blurRadius = 4.dp,
         noiseFactor = 0f,
     )
 }
@@ -63,30 +63,25 @@ private fun HazeEffectScope.applyDefaults() {
 fun Modifier.blurPill(state: HazeState, style: HazeStyle, shape: Shape = ShapePill): Modifier =
     clip(shape).hazeEffect(state, style) { applyDefaults() }
 
-/** Blur WITHOUT clipping - for surfaces whose clip animates (the morph popouts). */
-fun Modifier.blurSurface(state: HazeState, style: HazeStyle): Modifier =
-    hazeEffect(state, style) { applyDefaults() }
-
 /**
- * A dissolve band: light blur that STARTS LATE (eased onset - most of the band is untouched,
- * the frost ramps only near the bar edge) plus a gentle progressive darken riding the same ramp.
- * No tint anywhere (device feedback: "remove the tint... progressively darker once the blur
- * starts; less blur, starting later").
+ * A dissolve band: a light blur that ramps in a little before the bar, with the content fading
+ * into the page background right at the edge - a clean fade-out, not a darkening frost slab.
+ * [edgeColor] is the page background the content dissolves into.
  */
-fun Modifier.blurFade(state: HazeState, style: HazeStyle, fromTop: Boolean, darken: Float = 0.12f): Modifier {
-    // Keeps intensity near zero through ~60% of the band, then ramps to the edge.
-    val lateOnset = CubicBezierEasing(0.7f, 0f, 0.95f, 0.4f)
+fun Modifier.blurFade(state: HazeState, style: HazeStyle, fromTop: Boolean, edgeColor: Color): Modifier {
+    // Ramp in a little before the bar, then dissolve the content into the background at the edge.
+    val onset = CubicBezierEasing(0.55f, 0f, 0.82f, 0.6f)
     return hazeEffect(state, style) {
         applyDefaults()
         progressive = HazeProgressive.verticalGradient(
-            easing = lateOnset,
+            easing = onset,
             startIntensity = if (fromTop) 1f else 0f,
             endIntensity = if (fromTop) 0f else 1f,
         )
     }.background(
         Brush.verticalGradient(
-            if (fromTop) listOf(Color.Black.copy(alpha = darken), Color.Transparent)
-            else listOf(Color.Transparent, Color.Black.copy(alpha = darken)),
+            if (fromTop) listOf(edgeColor, Color.Transparent)
+            else listOf(Color.Transparent, edgeColor),
         ),
     )
 }

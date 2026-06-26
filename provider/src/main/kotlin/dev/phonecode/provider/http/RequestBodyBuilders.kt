@@ -36,8 +36,8 @@ object RequestBodyBuilders {
         put("model", req.model)
         req.sessionId?.let { put("prompt_cache_key", it) } // OpenAI-family automatic prefix caching
         put("messages", openAiMessages(req))
-        put("stream", req.stream)
-        if (req.stream) putJsonObject("stream_options") { put("include_usage", true) }
+        put("stream", true)
+        putJsonObject("stream_options") { put("include_usage", true) }
         if (req.tools.isNotEmpty()) put("tools", openAiTools(req.tools))
         if (req.reasoningEffort != ReasoningEffort.DEFAULT) {
             put("reasoning_effort", req.reasoningEffort.name.lowercase())
@@ -119,7 +119,7 @@ object RequestBodyBuilders {
             })
         }
         put("messages", anthropicMessages(req))
-        put("stream", req.stream)
+        put("stream", true)
         if (req.tools.isNotEmpty()) put("tools", anthropicTools(req.tools))
         thinking?.let { put("thinking", it) }
     }.toString()

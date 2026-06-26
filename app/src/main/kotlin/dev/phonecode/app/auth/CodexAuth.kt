@@ -121,6 +121,12 @@ class CodexAuth(
         loopback = null
     }
 
+    /** Clear all persisted Codex tokens and stop any in-flight loopback (CodexAuth owns its own key names). */
+    fun signOut() {
+        listOf(KEY_ACCESS, KEY_REFRESH, KEY_EXPIRES, KEY_ACCOUNT).forEach { store(it, "") }
+        stopLoopback()
+    }
+
     // -- Token exchange & refresh -----------------------------------------------------------
 
     /** Exchanges the authorization code for tokens and persists them. Blocking; throws [IOException] on failure. */
@@ -158,7 +164,9 @@ class CodexAuth(
 
     /** A currently valid access token, refreshing first when needed, or null if signed out/expired. */
     fun accessToken(): String? {
-        refreshIfNeeded()
+        // A network failure while refreshing must honor the null/last-token contract, not throw IOException
+        // out of a getter: fall through to the stored token and let the expiry check below decide.
+        runCatching { refreshIfNeeded() }
         val access = read(KEY_ACCESS) ?: return null
         val expires = read(KEY_EXPIRES)?.toLongOrNull() ?: return null
         return if (System.currentTimeMillis() > expires - REFRESH_MARGIN_MS) null else access

@@ -21,7 +21,8 @@ data class SkillInfo(val name: String, val description: String)
 
 /**
  * Per-turn model + effort, resolved fresh each turn so the model can switch mid-session.
- * [contextLimit]/[maxOutput] (from the model catalog) drive compaction; null disables it.
+ * [contextLimit] (from the model catalog) drives compaction; null disables it. [maxOutput] caps
+ * the response length via ChatRequest.maxTokens; null lets the provider/builder default apply.
  */
 data class TurnSettings(
     val model: String,

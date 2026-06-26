@@ -73,10 +73,25 @@ class ExternalDirectoryTool : Tool {
     }
 
     private fun readFile(file: File, cap: Int): ToolResult {
-        val bytes = file.readBytes()
-        val text = String(bytes.copyOf(minOf(bytes.size, cap)), Charsets.UTF_8)
-        val truncated = if (bytes.size > cap) "\n[Truncated at $cap bytes of ${bytes.size}.]" else ""
-        return ToolResult(text + truncated)
+        val total = file.length()
+        // Read at most `cap` bytes. Reading the whole file first (the old bug) OOMs on a multi-GB target;
+        // when it overflows the cap we stream exactly `cap` and stop, never pulling the rest into memory.
+        val bytes = if (total <= cap) {
+            file.readBytes()
+        } else {
+            ByteArray(cap).also { buf ->
+                file.inputStream().use { stream ->
+                    var off = 0
+                    while (off < cap) {
+                        val n = stream.read(buf, off, cap - off)
+                        if (n < 0) break
+                        off += n
+                    }
+                }
+            }
+        }
+        val truncated = if (total > cap) "\n[Truncated at $cap bytes of $total.]" else ""
+        return ToolResult(String(bytes, Charsets.UTF_8) + truncated)
     }
 
     private fun capBytes(text: String, cap: Int): String {

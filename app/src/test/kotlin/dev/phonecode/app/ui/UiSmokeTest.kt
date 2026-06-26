@@ -53,21 +53,16 @@ class UiSmokeTest {
     @Test
     fun chatControlsOpenWithoutCrashing() {
         dismissOnboardingIfPresent()
-        // Wrench sheet: attach row, thinking panel, context panel, git panel, plan toggle.
+        // Wrench sheet: attach row, thinking panel, plan toggle.
         compose.onNodeWithContentDescription("Tools").performClick()
-        compose.onNodeWithText("Photo / file").assertIsDisplayed()
+        compose.onNodeWithText("Photo or file").assertIsDisplayed()
         // A restored conversation (ScreenshotTest seeds leak across worker tests) can also contain
         // a "Thinking" row - the wrench panel's row is composed last.
         compose.onAllNodesWithText("Thinking").onLast().performClick()
         compose.onNodeWithContentDescription("Back").performClick()
-        compose.onAllNodesWithText("Context").onLast().performClick()
-        compose.onNodeWithText("Input").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Back").performClick()
-        compose.onAllNodesWithText("Git").onLast().performClick()
-        compose.onNodeWithContentDescription("Back").performClick()
         // The M3 sheet lives in its own window, out of reach of the activity's back dispatcher -
         // dismiss by selecting the attach row (the SAF intent is inert under Robolectric).
-        compose.onNodeWithText("Photo / file").performClick()
+        compose.onNodeWithText("Photo or file").performClick()
         compose.waitForIdle()
 
         // Model sheet opens from the composer's model pill (header is always visible; specific
@@ -81,6 +76,13 @@ class UiSmokeTest {
 
         // New chat.
         compose.onNodeWithContentDescription("New chat").performClick()
+        compose.waitForIdle()
+
+        // Context usage breakdown opens from the glanceable ring (moved out of the tools menu).
+        // Done last: this sheet has no in-content dismiss row, so we leave it open - the test only
+        // proves it composes without crashing.
+        compose.onNodeWithContentDescription("Context usage").performClick()
+        compose.onNodeWithText("Input").assertIsDisplayed()
     }
 
     @Test

@@ -53,7 +53,8 @@ class WebFetchTool(private val http: OkHttpClient) : Tool {
                     if (!response.isSuccessful) {
                         return@use ToolResult("webfetch: HTTP ${response.code} for $url", isError = true)
                     }
-                    val body = response.body?.string().orEmpty()
+                    // Bound the read so a multi-GB body can't be buffered whole just to truncate it later.
+                    val body = response.peekBody(MAX_BYTES).string()
                     val contentType = response.header("Content-Type").orEmpty()
                     val rendered = if (format == "html" || !(contentType.contains("html", true) || looksLikeHtml(body))) {
                         body
@@ -87,6 +88,7 @@ class WebFetchTool(private val http: OkHttpClient) : Tool {
 
     private companion object {
         const val MAX_CHARS = 100_000
+        const val MAX_BYTES = 5_000_000L // raw-body read cap (HTML only shrinks once stripped to text)
         const val USER_AGENT = "PhoneCode/0.1 (+https://phonecode.dev)"
         val SCRIPT = Regex("(?is)<script.*?</script>")
         val STYLE = Regex("(?is)<style.*?</style>")

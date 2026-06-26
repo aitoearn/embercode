@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 import java.io.File
@@ -31,6 +32,9 @@ internal fun JsonObject.str(key: String): String? =
 
 internal fun JsonObject.int(key: String): Int? = (this[key] as? JsonPrimitive)?.intOrNull
 
+// booleanOrNull reads content, so it accepts both a native JSON boolean and a "true"/"false" string.
+internal fun JsonObject.bool(key: String): Boolean? = (this[key] as? JsonPrimitive)?.booleanOrNull
+
 internal fun JsonObject.arr(key: String): JsonArray? = this[key] as? JsonArray
 
 internal fun objectSchema(properties: Map<String, JsonObject>, required: List<String>): JsonObject = buildJsonObject {
@@ -51,3 +55,6 @@ internal fun strSchema(description: String): JsonObject =
 
 internal fun intSchema(description: String): JsonObject =
     buildJsonObject { put("type", "integer"); put("description", description) }
+
+internal fun boolSchema(description: String): JsonObject =
+    buildJsonObject { put("type", "boolean"); put("description", description) }

@@ -1,7 +1,6 @@
 package dev.phonecode.app.data
 
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 
 /** Light / Dark follow the explicit choice; System tracks the device setting. */
@@ -27,7 +26,7 @@ data class AppSettings(
  * (ChatViewModel + SettingsViewModel) can't interleave a load→save cycle and lose an update.
  */
 class AppSettingsStore(private val file: File) {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val json = storeJson
 
     fun load(): AppSettings = synchronized(LOCK) { loadLocked() }
 

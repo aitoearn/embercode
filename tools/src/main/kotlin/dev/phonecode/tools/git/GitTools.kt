@@ -3,6 +3,10 @@ package dev.phonecode.tools.git
 import dev.phonecode.tools.Tool
 import dev.phonecode.tools.ToolContext
 import dev.phonecode.tools.ToolResult
+import dev.phonecode.tools.files.bool
+import dev.phonecode.tools.files.boolSchema
+import dev.phonecode.tools.files.int
+import dev.phonecode.tools.files.intSchema
 import dev.phonecode.tools.files.objectSchema
 import dev.phonecode.tools.files.str
 import dev.phonecode.tools.files.strSchema
@@ -27,9 +31,9 @@ fun gitTools(credentials: suspend () -> Pair<String, String>?): List<Tool> = lis
 private val NO_PARAMS = objectSchema(emptyMap(), emptyList())
 
 /** Open the workspace repo and run [block]; a friendly error if it isn't a repo. */
-private suspend fun <T> withRepo(context: ToolContext, name: String, block: (Git) -> T): ToolResult where T : Any =
+private suspend fun withRepo(context: ToolContext, name: String, block: (Git) -> String): ToolResult =
     withContext(Dispatchers.IO) {
-        runCatching { Git.open(File(context.workspacePath)).use { ToolResult(block(it).toString()) } }
+        runCatching { Git.open(File(context.workspacePath)).use { ToolResult(block(it)) } }
             .getOrElse { ToolResult("$name: ${it.message ?: "not a git repository (try git_init)"}", isError = true) }
     }
 
@@ -67,9 +71,9 @@ class GitDiffTool : Tool {
     override val name = "git_diff"
     override val description = "Show the diff. Defaults to unstaged (working tree vs index); pass staged=true for staged changes."
     override val promptSnippet = "show the git diff (unstaged, or staged)"
-    override val parameters = objectSchema(mapOf("staged" to strSchema("true to show staged changes (default false)")), emptyList())
+    override val parameters = objectSchema(mapOf("staged" to boolSchema("true to show staged changes (default false)")), emptyList())
     override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult {
-        val staged = args.str("staged")?.equals("true", ignoreCase = true) == true
+        val staged = args.bool("staged") == true
         return withRepo(context, name) { git ->
             val repo = git.repository
             val out = ByteArrayOutputStream()
@@ -94,10 +98,10 @@ class GitDiffTool : Tool {
 
 class GitAddTool : Tool {
     override val name = "git_add"
-    override val description = "Stage files for commit. Pass a path glob, or omit to stage everything ('.')."
+    override val description = "Stage files for commit. Pass a file or directory path, or omit to stage everything ('.')."
     override val mutating = true
     override val promptSnippet = "stage files for commit (git add)"
-    override val parameters = objectSchema(mapOf("path" to strSchema("File path or glob to stage (default: all)")), emptyList())
+    override val parameters = objectSchema(mapOf("path" to strSchema("File or directory path to stage (default: all). A path prefix, not a glob.")), emptyList())
     override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult {
         val pattern = args.str("path")?.takeIf { it.isNotBlank() } ?: "."
         return withRepo(context, name) { git ->
@@ -136,9 +140,9 @@ class GitLogTool : Tool {
     override val name = "git_log"
     override val description = "Show recent commits (hash, author, message)."
     override val promptSnippet = "show recent git commits"
-    override val parameters = objectSchema(mapOf("count" to strSchema("How many commits (default 15)")), emptyList())
+    override val parameters = objectSchema(mapOf("count" to intSchema("How many commits (default 15)")), emptyList())
     override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult {
-        val count = args.str("count")?.toIntOrNull()?.coerceIn(1, 100) ?: 15
+        val count = args.int("count")?.coerceIn(1, 100) ?: 15
         return withRepo(context, name) { git ->
             git.log().setMaxCount(count).call().joinToString("\n") { c ->
                 "${c.name.take(8)}  ${c.authorIdent.name}  ${c.shortMessage}"
@@ -176,12 +180,12 @@ class GitCheckoutTool : Tool {
     override val mutating = true
     override val promptSnippet = "switch git branches (checkout)"
     override val parameters = objectSchema(
-        mapOf("name" to strSchema("Branch to switch to"), "create" to strSchema("true to create the branch first")),
+        mapOf("name" to strSchema("Branch to switch to"), "create" to boolSchema("true to create the branch first")),
         required = listOf("name"),
     )
     override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult {
         val branch = args.str("name") ?: return ToolResult("git_checkout: missing 'name'", isError = true)
-        val create = args.str("create")?.equals("true", ignoreCase = true) == true
+        val create = args.bool("create") == true
         return withRepo(context, name) { git ->
             git.checkout().setName(branch).setCreateBranch(create).call()
             "switched to $branch"

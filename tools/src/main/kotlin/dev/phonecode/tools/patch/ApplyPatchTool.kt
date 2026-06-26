@@ -242,8 +242,10 @@ class ApplyPatchTool : Tool {
         throw PatchException("patch is missing '$END'")
     }
 
-    /** A line belongs to an Add File body until the next section marker or end-of-patch. */
-    private fun String.isContentBody(): Boolean = !isSectionBoundary()
+    /** A line belongs to an Add File body until the next section marker, a blank separator, or end-of-patch.
+     *  Empty added lines are written as a bare "+", so a truly blank line ends the body and lets the outer
+     *  loop's blank-tolerance skip it (a blank after/between Add sections must not be read as content). */
+    private fun String.isContentBody(): Boolean = isNotBlank() && !isSectionBoundary()
 
     /** A line belongs to a hunk body until the next hunk, section marker, or end-of-patch. */
     private fun String.isHunkBody(): Boolean = !startsWith("@@") && !isSectionBoundary()

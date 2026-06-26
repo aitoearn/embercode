@@ -7,8 +7,13 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import java.io.File
+import java.io.IOException
 import java.nio.file.FileSystems
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 
 /** The native, zero-setup file tools available on any device. */
 fun defaultFileTools(): List<Tool> = listOf(ReadTool(), WriteTool(), EditTool(), LsTool(), GlobTool(), GrepTool())
@@ -19,6 +24,24 @@ private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
 private fun resolve(context: ToolContext, path: String): Result<File> =
     runCatching { resolveInWorkspace(context.workspacePath, path) }
+
+// Directories glob/grep must never descend into: VCS internals and build output are huge, machine-owned,
+// and never what a search wants. Pruning the whole subtree (not just filtering reads) is the real speedup.
+private val PRUNED_DIRS = setOf(".git", "node_modules", "build", ".gradle", ".idea")
+
+/** Visit regular files under [base], skipping [PRUNED_DIRS] subtrees. Return false from [onFile] to stop early. */
+private fun walkFiles(base: Path, onFile: (Path) -> Boolean) {
+    Files.walkFileTree(base, object : SimpleFileVisitor<Path>() {
+        override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult =
+            if (dir != base && dir.fileName?.toString() in PRUNED_DIRS) FileVisitResult.SKIP_SUBTREE
+            else FileVisitResult.CONTINUE
+
+        override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult =
+            if (onFile(file)) FileVisitResult.CONTINUE else FileVisitResult.TERMINATE
+
+        override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+    })
+}
 
 class ReadTool : Tool {
     override val name = "read"
@@ -187,13 +210,11 @@ class GlobTool : Tool {
         val matcher = FileSystems.getDefault().getPathMatcher("glob:$pattern")
         val basePath = base.toPath()
         val matches = mutableListOf<String>()
-        Files.walk(basePath).use { stream ->
-            for (p in stream) {
-                if (Files.isRegularFile(p) && matcher.matches(basePath.relativize(p))) {
-                    matches += basePath.relativize(p).toString().replace('\\', '/')
-                    if (matches.size >= MAX_RESULTS) break
-                }
+        walkFiles(basePath) { p ->
+            if (matcher.matches(basePath.relativize(p))) {
+                matches += basePath.relativize(p).toString().replace('\\', '/')
             }
+            matches.size < MAX_RESULTS
         }
         return ToolResult(if (matches.isEmpty()) "(no matches)" else matches.sorted().joinToString("\n"))
     }
@@ -220,20 +241,20 @@ class GrepTool : Tool {
         val fileGlob = args.str("glob")?.let { FileSystems.getDefault().getPathMatcher("glob:$it") }
         val basePath = base.toPath()
         val hits = mutableListOf<String>()
-        Files.walk(basePath).use { stream ->
-            outer@ for (p in stream) {
-                if (!Files.isRegularFile(p)) continue
-                if (Files.size(p) > MAX_FILE_BYTES) continue
-                if (fileGlob != null && !fileGlob.matches(basePath.relativize(p))) continue
+        walkFiles(basePath) { p ->
+            if (Files.size(p) <= MAX_FILE_BYTES && (fileGlob == null || fileGlob.matches(basePath.relativize(p)))) {
                 val rel = basePath.relativize(p).toString().replace('\\', '/')
-                val lines = runCatching { Files.readAllLines(p) }.getOrNull() ?: continue
-                for (i in lines.indices) {
-                    if (regex.containsMatchIn(lines[i])) {
-                        hits += "$rel:${i + 1}: ${lines[i].trim().take(200)}"
-                        if (hits.size >= MAX_RESULTS) break@outer
+                val lines = runCatching { Files.readAllLines(p) }.getOrNull()
+                if (lines != null) {
+                    for (i in lines.indices) {
+                        if (regex.containsMatchIn(lines[i])) {
+                            hits += "$rel:${i + 1}: ${lines[i].trim().take(200)}"
+                            if (hits.size >= MAX_RESULTS) return@walkFiles false
+                        }
                     }
                 }
             }
+            true
         }
         return ToolResult(if (hits.isEmpty()) "(no matches)" else hits.joinToString("\n"))
     }

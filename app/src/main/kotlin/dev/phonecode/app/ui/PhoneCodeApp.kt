@@ -13,7 +13,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -22,8 +21,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.safeDrawing
@@ -32,7 +36,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
@@ -40,11 +43,19 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.Inbox
+import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,19 +63,22 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.vector.ImageVector
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import androidx.compose.ui.text.font.FontWeight
@@ -77,11 +91,12 @@ import dev.phonecode.app.agent.ChatViewModel
 import dev.phonecode.app.data.Project
 import dev.phonecode.app.data.SessionMeta
 import dev.phonecode.app.data.ThemeMode
-import dev.phonecode.app.git.GitViewModel
 import dev.phonecode.app.ui.chat.ChatScreen
 import dev.phonecode.app.ui.onboarding.OnboardingScreen
 import dev.phonecode.app.ui.components.PcButton
 import dev.phonecode.app.ui.components.PcField
+import dev.phonecode.app.ui.components.pressFeedback
+import androidx.compose.material3.ripple
 import dev.phonecode.app.ui.settings.SettingsScreen
 import dev.phonecode.app.ui.theme.PhoneCodeTheme
 import dev.phonecode.app.ui.theme.PhoneSprings
@@ -108,9 +123,12 @@ private tailrec fun android.content.Context.findActivity(): android.app.Activity
 @Composable
 fun PhoneCodeApp() {
     val vm: ChatViewModel = viewModel()
-    val gitVm: GitViewModel = viewModel()
     val settingsVm: SettingsViewModel = viewModel()
     val settings by settingsVm.settings.collectAsState()
+    val settingsLoaded by settingsVm.loaded.collectAsState()
+    // First-run overlay up: hide everything behind it from accessibility so TalkBack can't reach
+    // the chat/settings controls under the modal.
+    val showOnboarding = settingsLoaded && !settings.onboarded
 
     val dark = when (settings.mode) {
         ThemeMode.LIGHT -> false
@@ -150,12 +168,11 @@ fun PhoneCodeApp() {
 
         var route by rememberSaveable { mutableStateOf("chat") }
         var drawerOpen by rememberSaveable { mutableStateOf(false) }
+        // Opening the drawer dismisses the keyboard so the sidebar isn't squeezed by the IME.
+        val focusManager = LocalFocusManager.current
+        LaunchedEffect(drawerOpen) { if (drawerOpen) focusManager.clearFocus() }
         // Onboarding deep-links open settings on a specific sub-page; normal entry resets to home.
         var settingsInitial by rememberSaveable { mutableStateOf("home") }
-
-        // The git UI follows the active chat's project workspace.
-        val chatState by vm.state.collectAsState()
-        LaunchedEffect(chatState.currentProjectId) { gitVm.setWorkspace(vm.activeWorkspace()) }
 
         val progress by animateFloatAsState(if (drawerOpen) 1f else 0f, PhoneSprings.drawer, label = "drawer")
         val screenWidth = LocalConfiguration.current.screenWidthDp.dp
@@ -199,7 +216,9 @@ fun PhoneCodeApp() {
             // consume the events first and the gesture never fired on device (round-3 feedback).
             // Only gestures that BEGIN in the left 28dp strip are claimed.
             Box(
-                Modifier.fillMaxSize().pointerInput(Unit) {
+                Modifier.fillMaxSize()
+                    .then(if (showOnboarding) Modifier.clearAndSetSemantics {} else Modifier)
+                    .pointerInput(Unit) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false, pass = androidx.compose.ui.input.pointer.PointerEventPass.Initial)
                         if (down.position.x > 28.dp.toPx()) return@awaitEachGesture
@@ -226,6 +245,9 @@ fun PhoneCodeApp() {
                 Box(
                     Modifier.fillMaxSize().background(colors.background)
                         .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
+                        // Drawer open: swallow the IME inset so focusing the sidebar search field
+                        // can't push the chat composer (behind the drawer) up with the keyboard.
+                        .then(if (drawerOpen) Modifier.consumeWindowInsets(WindowInsets.ime) else Modifier)
                         .graphicsLayer {
                             // Drawer open: the main pane settles back (the push-back depth cue)
                             // while the sidebar overlays it.
@@ -251,8 +273,10 @@ fun PhoneCodeApp() {
                         Box(
                             Modifier.graphicsLayer {
                                 // Predictive back: only the route being backed out carries the
-                                // gesture transform, held through its exit so nothing snaps.
-                                if (r == backingOutRoute) {
+                                // gesture transform, held through its exit so nothing snaps. The
+                                // `r != route` guard means a stale backingOutRoute (e.g. a re-navigation
+                                // that outran the cleanup) can never make the CURRENT screen invisible.
+                                if (r == backingOutRoute && r != route) {
                                     val t = backAnim.value
                                     translationX = t * size.width * 0.4f
                                     alpha = 1f - t
@@ -262,8 +286,8 @@ fun PhoneCodeApp() {
                             },
                         ) {
                             when (r) {
-                                "settings" -> SettingsScreen(vm, gitVm, settingsVm, onBack = { route = "chat" }, initialPage = settingsInitial)
-                                else -> ChatScreen(vm, gitVm, onOpenDrawer = { drawerOpen = true }, sendOnEnter = settings.sendOnEnter)
+                                "settings" -> SettingsScreen(vm, settingsVm, onBack = { route = "chat" }, initialPage = settingsInitial)
+                                else -> ChatScreen(vm, onOpenDrawer = { drawerOpen = true }, sendOnEnter = settings.sendOnEnter)
                             }
                         }
                     }
@@ -302,9 +326,8 @@ fun PhoneCodeApp() {
             }
 
             // ----- first-run onboarding (covers everything until dismissed) -----
-            val settingsLoaded by settingsVm.loaded.collectAsState()
             androidx.compose.animation.AnimatedVisibility(
-                visible = settingsLoaded && !settings.onboarded,
+                visible = showOnboarding,
                 enter = androidx.compose.animation.EnterTransition.None,
                 exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(280)),
             ) {
@@ -340,22 +363,47 @@ private fun Sidebar(
     var newProject by remember { mutableStateOf(false) }
     var chatMenu by remember { mutableStateOf<SessionMeta?>(null) }
     var projectMenu by remember { mutableStateOf<Project?>(null) }
+    var renameChat by remember { mutableStateOf<SessionMeta?>(null) }
+    var renameProject by remember { mutableStateOf<Project?>(null) }
+    var archivedOpen by remember { mutableStateOf(false) }
 
-    val byProject = state.sessions
-        .filter { query.isBlank() || it.title.contains(query, ignoreCase = true) }
-        .groupBy { it.projectId }
+    // Pinned floats to the top; archived drops out of the main list into its own section; the
+    // rest groups by project then recency.
+    val filtered = state.sessions.filter { query.isBlank() || it.title.contains(query, ignoreCase = true) }
+    val pinned = filtered.filter { it.pinned && !it.archived }
+    val archived = filtered.filter { it.archived }
+    val byProject = filtered.filter { !it.pinned && !it.archived }.groupBy { it.projectId }
 
     Column(
         // One tone above the (scrimmed) canvas behind it - the drawer separates by material.
-        Modifier.width(width).fillMaxSize().background(colors.surfaceContainerLow).windowInsetsPadding(WindowInsets.safeDrawing),
+        Modifier.width(width).fillMaxSize().background(colors.surfaceContainerLow).windowInsetsPadding(WindowInsets.systemBars),
     ) {
+        // Header: wordmark + a prominent New chat button.
+        Row(
+            Modifier.fillMaxWidth().padding(start = 18.dp, end = 10.dp, top = 6.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("PhoneCode", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold), color = colors.onBackground, modifier = Modifier.weight(1f))
+            val newChatInteraction = remember { MutableInteractionSource() }
+            Row(
+                Modifier.clip(MaterialTheme.shapes.small).pressFeedback(newChatInteraction, pressedScale = 0.94f)
+                    .background(colors.surfaceContainerHigh)
+                    .clickable(interactionSource = newChatInteraction, indication = ripple()) { vm.newChat(null); onOpenChat() }
+                    .padding(start = 10.dp, end = 12.dp, top = 7.dp, bottom = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Icon(Icons.Filled.Add, null, tint = colors.onBackground, modifier = Modifier.size(16.dp))
+                Text("New chat", style = MaterialTheme.typography.labelMedium, color = colors.onBackground)
+            }
+        }
         // search
         Row(
             Modifier.fillMaxWidth().padding(horizontal = Spacing.m, vertical = Spacing.xs).height(42.dp)
                 .clip(MaterialTheme.shapes.small).background(colors.surfaceContainerHigh),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Filled.Search, null, tint = colors.secondary, modifier = Modifier.padding(start = 13.dp).size(18.dp))
+            Icon(Icons.Outlined.Search, null, tint = colors.secondary, modifier = Modifier.padding(start = 13.dp).size(18.dp))
             Box(Modifier.weight(1f).padding(horizontal = 9.dp)) {
                 if (query.isEmpty()) Text("Search chats", style = MaterialTheme.typography.bodySmall, color = colors.secondary)
                 BasicTextField(
@@ -367,8 +415,17 @@ private fun Sidebar(
         }
 
         LazyColumn(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+            if (pinned.isNotEmpty()) {
+                item(key = "h_pinned") { SectionHeader("Pinned") }
+                pinned.forEach { meta ->
+                    item(key = "pin_${meta.id}") {
+                        ChatRow(meta, active = meta.id == state.currentSessionId, indent = 12.dp,
+                            onClick = { vm.switchSession(meta.id); onOpenChat() }, onMenu = { chatMenu = meta })
+                    }
+                }
+            }
             item {
-                Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 12.dp, bottom = 6.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().padding(start = 12.dp, top = 14.dp, bottom = 6.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("Projects", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
                     Box(Modifier.size(28.dp).clip(MaterialTheme.shapes.extraSmall).clickable { newProject = true }, contentAlignment = Alignment.Center) {
                         Icon(Icons.Filled.Add, "New project", tint = colors.secondary, modifier = Modifier.size(17.dp))
@@ -393,7 +450,7 @@ private fun Sidebar(
                             Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = colors.tertiary,
                             modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = rotation },
                         )
-                        Icon(Icons.Filled.Folder, null, tint = colors.secondary, modifier = Modifier.size(19.dp))
+                        Icon(Icons.Outlined.Folder, null, tint = colors.secondary, modifier = Modifier.size(19.dp))
                         Text(project.name, style = MaterialTheme.typography.titleSmall, color = colors.onBackground, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text("${byProject[project.id]?.size ?: 0}", style = MaterialTheme.typography.labelMedium, color = colors.tertiary)
                         // New chat IN this project (mockup parity).
@@ -414,48 +471,61 @@ private fun Sidebar(
                     chats.forEach { meta ->
                         item(key = "c_${meta.id}") {
                             ChatRow(meta, active = meta.id == state.currentSessionId, indent = 40.dp,
-                                onClick = { vm.switchSession(meta.id); onOpenChat() }, onLongClick = { chatMenu = meta })
+                                onClick = { vm.switchSession(meta.id); onOpenChat() }, onMenu = { chatMenu = meta })
                         }
                     }
                 }
             }
-            // A "Chats" header only earns its place when projects exist above it; otherwise the
-            // list IS the chats and a second caps label just reads as wireframe noise.
-            if (state.projects.isNotEmpty() && byProject[null].orEmpty().isNotEmpty()) {
-                item { Text("Chats", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 6.dp)) }
-            }
-            byProject[null].orEmpty().forEach { meta ->
-                item(key = "u_${meta.id}") {
-                    ChatRow(meta, active = meta.id == state.currentSessionId, indent = 12.dp,
-                        onClick = { vm.switchSession(meta.id); onOpenChat() }, onLongClick = { chatMenu = meta })
+            // Loose chats grouped by recency - Today / Yesterday / Previous 7 days / Earlier.
+            timeBuckets(byProject[null].orEmpty()).forEach { (label, chats) ->
+                item(key = "h_$label") {
+                    Text(label, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 4.dp))
+                }
+                chats.forEach { meta ->
+                    item(key = "u_${meta.id}") {
+                        ChatRow(meta, active = meta.id == state.currentSessionId, indent = 12.dp,
+                            onClick = { vm.switchSession(meta.id); onOpenChat() }, onMenu = { chatMenu = meta })
+                    }
                 }
             }
-            item {
-                Row(
-                    Modifier.fillMaxWidth().padding(top = 4.dp).clip(MaterialTheme.shapes.small)
-                        .clickable { vm.newChat(null); onOpenChat() }.heightIn(min = Spacing.touchTarget).padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    Icon(Icons.Filled.Add, null, tint = colors.secondary, modifier = Modifier.size(17.dp))
-                    Text("New chat", style = MaterialTheme.typography.bodySmall, color = colors.secondary)
+            // Archived chats: collapsed by default, recoverable from the same overflow menu.
+            if (archived.isNotEmpty()) {
+                item(key = "h_archived") {
+                    Row(
+                        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable { archivedOpen = !archivedOpen }
+                            .heightIn(min = 40.dp).padding(start = 12.dp, end = 8.dp, top = 8.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        val rotation by animateFloatAsState(if (archivedOpen) 90f else 0f, PhoneSprings.standard, label = "arch")
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = colors.tertiary, modifier = Modifier.size(16.dp).graphicsLayer { rotationZ = rotation })
+                        Text("Archived", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                        Text("${archived.size}", style = MaterialTheme.typography.labelMedium, color = colors.tertiary)
+                    }
+                }
+                if (archivedOpen) archived.forEach { meta ->
+                    item(key = "a_${meta.id}") {
+                        ChatRow(meta, active = meta.id == state.currentSessionId, indent = 35.dp,
+                            onClick = { vm.switchSession(meta.id); onOpenChat() }, onMenu = { chatMenu = meta })
+                    }
                 }
             }
         }
 
-        // Pinned bottom action, separated by a hairline so it reads as the drawer's footer rather
-        // than a stray list item (round-3: "out of place and does not fit anything"). The row
-        // itself speaks the app-wide menu language: bodyLarge label, quiet outlined icon, 48dp.
+        // Drawer footer, set off by a hairline. A single quiet gear leads the label - the monogram
+        // chip is gone (device feedback: minimal, no decorative marks).
+        val settingsInteraction = remember { MutableInteractionSource() }
         Box(Modifier.fillMaxWidth().height(1.dp).background(colors.outlineVariant))
         Row(
             Modifier.padding(horizontal = 10.dp, vertical = 6.dp).fillMaxWidth()
-                .clip(MaterialTheme.shapes.small).clickable(onClick = onOpenSettings)
-                .heightIn(min = 48.dp).padding(horizontal = 12.dp),
+                .clip(MaterialTheme.shapes.small).pressFeedback(settingsInteraction, pressedScale = 0.98f)
+                .clickable(interactionSource = settingsInteraction, indication = ripple(), onClick = onOpenSettings)
+                .heightIn(min = 52.dp).padding(start = 16.dp, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Icon(Icons.Outlined.Settings, null, tint = colors.onSurfaceVariant, modifier = Modifier.size(22.dp))
-            Text("Settings", style = MaterialTheme.typography.bodyLarge, color = colors.onBackground)
+            Icon(Icons.Outlined.Settings, null, tint = colors.onSurfaceVariant, modifier = Modifier.size(20.dp))
+            Text("Settings", style = MaterialTheme.typography.bodyLarge, color = colors.onBackground, modifier = Modifier.weight(1f))
         }
     }
 
@@ -465,46 +535,105 @@ private fun Sidebar(
         }
     }
     chatMenu?.let { meta ->
-        ChatOptionsDialog(
+        ChatOptionsSheet(
             meta = meta,
             projects = state.projects,
             onDismiss = { chatMenu = null },
-            onRename = { vm.renameSession(meta.id, it); chatMenu = null },
-            onMove = { vm.moveSession(meta.id, it); chatMenu = null },
-            onDelete = { vm.deleteSession(meta.id); chatMenu = null },
+            onPin = { vm.setSessionPinned(meta.id, !meta.pinned) },
+            onRequestRename = { renameChat = meta },
+            onMove = { vm.moveSession(meta.id, it) },
+            onArchive = { vm.setSessionArchived(meta.id, !meta.archived) },
+            onDelete = { vm.deleteSession(meta.id) },
         )
     }
     projectMenu?.let { project ->
-        ProjectOptionsDialog(
+        ProjectOptionsSheet(
             project = project,
             onDismiss = { projectMenu = null },
-            onRename = { vm.renameProject(project.id, it); projectMenu = null },
-            onDelete = { vm.deleteProject(project.id); projectMenu = null },
+            onRequestRename = { renameProject = project },
+            onDelete = { vm.deleteProject(project.id) },
         )
     }
+    renameChat?.let { meta ->
+        TextPromptDialog("Rename chat", "Chat title", meta.title, { renameChat = null }) {
+            vm.renameSession(meta.id, it); renameChat = null
+        }
+    }
+    renameProject?.let { project ->
+        TextPromptDialog("Rename project", "Project name", project.name, { renameProject = null }) {
+            vm.renameProject(project.id, it); renameProject = null
+        }
+    }
+}
+
+/** Recency buckets for the loose chat list: Today / Yesterday / Previous 7 days / Earlier. */
+private fun timeBuckets(sessions: List<SessionMeta>): List<Pair<String, List<SessionMeta>>> {
+    val now = System.currentTimeMillis()
+    val day = 86_400_000L
+    val labels = listOf("Today", "Yesterday", "Previous 7 days", "Earlier")
+    fun idx(t: Long): Int = when {
+        now - t < day -> 0
+        now - t < 2 * day -> 1
+        now - t < 7 * day -> 2
+        else -> 3
+    }
+    return labels.indices.mapNotNull { i ->
+        val chats = sessions.filter { idx(it.updatedAt) == i }
+        if (chats.isEmpty()) null else labels[i] to chats
+    }
+}
+
+/** A drawer list-section label (Pinned / Today / ...) in the shared quiet-caption style. */
+@Composable
+private fun SectionHeader(label: String) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 4.dp),
+    )
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChatRow(meta: SessionMeta, active: Boolean, indent: androidx.compose.ui.unit.Dp, onClick: () -> Unit, onLongClick: () -> Unit) {
+private fun ChatRow(meta: SessionMeta, active: Boolean, indent: androidx.compose.ui.unit.Dp, onClick: () -> Unit, onMenu: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Row(
-        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
+        Modifier.fillMaxWidth().padding(vertical = 1.dp).clip(MaterialTheme.shapes.medium)
             .background(if (active) colors.surfaceContainerHigh else androidx.compose.ui.graphics.Color.Transparent)
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .heightIn(min = 40.dp).padding(start = indent, end = 12.dp),
+            .combinedClickable(onClick = onClick, onLongClick = onMenu)
+            .heightIn(min = 50.dp).padding(start = indent, end = 2.dp, top = 7.dp, bottom = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Selection = a quiet tone pill; tone is the highlight, no extra marks (grok-design.md).
-        Text(
-            meta.title,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (active) colors.onBackground else colors.secondary,
-            fontWeight = if (active) FontWeight.Medium else FontWeight.Normal,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
-        )
-        Text(WHEN.format(Date(meta.updatedAt)), style = MaterialTheme.typography.labelSmall, color = colors.tertiary)
+        // Two lines: title + a one-line preview. Selection is a quiet tone pill (grok-design.md).
+        Column(Modifier.weight(1f)) {
+            Text(
+                meta.title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.onBackground,
+                fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (meta.preview.isNotEmpty()) {
+                Text(
+                    meta.preview,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.tertiary,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(top = 1.dp),
+                )
+            }
+        }
+        Text(WHEN.format(Date(meta.updatedAt)), style = MaterialTheme.typography.labelSmall, color = colors.tertiary, modifier = Modifier.padding(start = 8.dp))
+        // Three-dot overflow: pin / move / archive / delete (also reachable via long-press).
+        val menuInteraction = remember { MutableInteractionSource() }
+        Box(
+            Modifier.size(32.dp).pressFeedback(menuInteraction, pressedScale = 0.85f).clip(MaterialTheme.shapes.extraSmall)
+                .clickable(interactionSource = menuInteraction, indication = ripple(bounded = false, radius = 18.dp), onClick = onMenu),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Filled.MoreVert, "Chat options", tint = colors.secondary, modifier = Modifier.size(18.dp))
+        }
     }
 }
 
@@ -527,50 +656,86 @@ private fun OptionsCard(title: String, onDismiss: () -> Unit, content: @Composab
     }
 }
 
+/**
+ * Native action bottom sheet - the app-wide menu language (matches the tools/model sheets). The
+ * platform owns the slide/scrim/drag; rows wrap their action with [close] so the sheet glides shut
+ * on tap instead of snapping. One quiet caption title, then the action rows.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun OptionRow(text: String, destructive: Boolean = false, onClick: () -> Unit) {
+private fun ActionSheet(title: String, onDismiss: () -> Unit, content: @Composable ColumnScope.(close: () -> Unit) -> Unit) {
     val colors = MaterialTheme.colorScheme
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    val close: () -> Unit = { scope.launch { sheetState.hide() }.invokeOnCompletion { if (!sheetState.isVisible) onDismiss() } }
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState, containerColor = colors.surfaceContainerLow) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 8.dp, vertical = 2.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.labelMedium,
+                color = colors.tertiary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 14.dp, top = 2.dp, bottom = 6.dp),
+            )
+            content(close)
+        }
+    }
+}
+
+/** One action-sheet row: thin line icon + label, spring press-pop. Destructive rows tint to error. */
+@Composable
+private fun SheetActionRow(label: String, icon: ImageVector, destructive: Boolean = false, onClick: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val interaction = remember { MutableInteractionSource() }
     Row(
-        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable(onClick = onClick).heightIn(min = Spacing.touchTarget).padding(horizontal = 12.dp),
+        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
+            .pressFeedback(interaction, pressedScale = 0.97f)
+            .clickable(interactionSource = interaction, indication = ripple(), onClick = onClick)
+            .heightIn(min = 52.dp).padding(start = 14.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text(text, style = MaterialTheme.typography.bodySmall, color = if (destructive) colors.error else colors.onBackground)
+        Icon(icon, null, tint = if (destructive) colors.error else colors.secondary, modifier = Modifier.size(20.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (destructive) colors.error else colors.onBackground,
+            modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
 @Composable
-private fun ChatOptionsDialog(
+private fun ChatOptionsSheet(
     meta: SessionMeta,
     projects: List<Project>,
     onDismiss: () -> Unit,
-    onRename: (String) -> Unit,
+    onPin: () -> Unit,
+    onRequestRename: () -> Unit,
     onMove: (String?) -> Unit,
+    onArchive: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var mode by remember { mutableStateOf("menu") }
-    when (mode) {
-        "rename" -> TextPromptDialog("Rename chat", "Chat title", meta.title, onDismiss) { onRename(it) }
-        "move" -> OptionsCard("Move to", onDismiss) {
-            OptionRow("Unsorted") { onMove(null) }
-            projects.forEach { p -> OptionRow(p.name) { onMove(p.id) } }
-        }
-        else -> OptionsCard(meta.title, onDismiss) {
-            OptionRow("Rename") { mode = "rename" }
-            OptionRow("Move to...") { mode = "move" }
-            OptionRow("Delete", destructive = true, onClick = onDelete)
+    ActionSheet(title = if (mode == "move") "Move to" else meta.title, onDismiss = onDismiss) { close ->
+        if (mode == "move") {
+            SheetActionRow("Unsorted", Icons.Outlined.Inbox) { onMove(null); close() }
+            projects.forEach { p -> SheetActionRow(p.name, Icons.Outlined.Folder) { onMove(p.id); close() } }
+        } else {
+            SheetActionRow(if (meta.pinned) "Unpin" else "Pin", Icons.Outlined.PushPin) { onPin(); close() }
+            SheetActionRow("Rename", Icons.Outlined.Edit) { onRequestRename(); close() }
+            SheetActionRow("Move to...", Icons.Outlined.Folder) { mode = "move" }
+            SheetActionRow(if (meta.archived) "Unarchive" else "Archive", Icons.Outlined.Archive) { onArchive(); close() }
+            SheetActionRow("Delete", Icons.Outlined.DeleteOutline, destructive = true) { onDelete(); close() }
         }
     }
 }
 
 @Composable
-private fun ProjectOptionsDialog(project: Project, onDismiss: () -> Unit, onRename: (String) -> Unit, onDelete: () -> Unit) {
-    var mode by remember { mutableStateOf("menu") }
-    when (mode) {
-        "rename" -> TextPromptDialog("Rename project", "Project name", project.name, onDismiss) { onRename(it) }
-        else -> OptionsCard(project.name, onDismiss) {
-            OptionRow("Rename") { mode = "rename" }
-            OptionRow("Delete (chats become unsorted)", destructive = true, onClick = onDelete)
-        }
+private fun ProjectOptionsSheet(project: Project, onDismiss: () -> Unit, onRequestRename: () -> Unit, onDelete: () -> Unit) {
+    ActionSheet(title = project.name, onDismiss = onDismiss) { close ->
+        SheetActionRow("Rename", Icons.Outlined.Edit) { onRequestRename(); close() }
+        SheetActionRow("Delete project", Icons.Outlined.DeleteOutline, destructive = true) { onDelete(); close() }
     }
 }
 

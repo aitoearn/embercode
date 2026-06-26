@@ -20,6 +20,4 @@ val ShapePill = RoundedCornerShape(percent = 50)
 // rest it is a mathematically perfect pill, and unlike percent-50 the corners do not warp while
 // animateContentSize grows the box (device feedback: "the chat input box is not perfectly rounded").
 val ShapeComposer = RoundedCornerShape(26.dp)
-val ShapePhone = RoundedCornerShape(52.dp)
-val ShapeSmallIcon = RoundedCornerShape(8.dp)
 val ShapeMediumIcon = RoundedCornerShape(13.dp)

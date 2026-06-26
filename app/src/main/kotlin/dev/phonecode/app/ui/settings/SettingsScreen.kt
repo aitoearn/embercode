@@ -49,12 +49,15 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -63,9 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.graphicsLayer
@@ -75,7 +76,6 @@ import dev.phonecode.app.agent.ChatViewModel
 import dev.phonecode.app.data.CustomModel
 import dev.phonecode.app.data.CustomProvider
 import dev.phonecode.app.data.ThemeMode
-import dev.phonecode.app.git.GitViewModel
 import dev.phonecode.app.ui.SettingsViewModel
 import dev.phonecode.app.ui.components.PcButton
 import dev.phonecode.app.ui.components.PcField
@@ -114,7 +114,7 @@ private fun depthOf(page: String): Int = when {
 /** Settings: a home list + every sub-page, navigated with an iOS-style slide.
  *  [initialPage] lets callers (onboarding) deep-link straight to a sub-page. */
 @Composable
-fun SettingsScreen(vm: ChatViewModel, gitVm: GitViewModel, settingsVm: SettingsViewModel, onBack: () -> Unit, initialPage: String = "home") {
+fun SettingsScreen(vm: ChatViewModel, settingsVm: SettingsViewModel, onBack: () -> Unit, initialPage: String = "home") {
     var page by rememberSaveable(initialPage) { mutableStateOf(initialPage) }
 
     // Predictive back WITHIN settings: the page visibly follows the finger (translate + dim) and,
@@ -344,8 +344,9 @@ private fun GeneralPage(vm: ChatViewModel, settingsVm: SettingsViewModel, onBack
                     "Default mode: " + mode.name.lowercase().replaceFirstChar { it.uppercase() },
                     selected = settings.defaultMode == mode.name,
                 ) {
+                    // Default governs NEW conversations (applied in ChatViewModel.newChat / init); changing
+                    // it must not retroactively flip the active chat's mode - that's the per-chat Plan toggle.
                     settingsVm.update { it.copy(defaultMode = mode.name) }
-                    vm.setAgentMode(mode)
                 }
             }
             ToggleRow("Send on Enter", checked = settings.sendOnEnter) { v -> settingsVm.update { it.copy(sendOnEnter = v) } }
@@ -373,11 +374,24 @@ private fun AppearancePage(settingsVm: SettingsViewModel, onBack: () -> Unit) {
 private fun PersonalPage(settingsVm: SettingsViewModel, onBack: () -> Unit) {
     val settings by settingsVm.settings.collectAsStateWithLifecycle()
     var text by remember(settings.customInstructions) { mutableStateOf(settings.customInstructions) }
+    // Persist on a debounce instead of per keystroke (the old onValueChange rewrote the whole settings
+    // file on every character). The debounce coalesces typing; the onDispose flush below covers leaving
+    // the page within the debounce window so no edit is lost.
+    LaunchedEffect(text) {
+        if (text != settings.customInstructions) {
+            delay(400)
+            settingsVm.update { it.copy(customInstructions = text) }
+        }
+    }
+    val latest by rememberUpdatedState(text)
+    DisposableEffect(Unit) {
+        onDispose { settingsVm.update { if (latest != it.customInstructions) it.copy(customInstructions = latest) else it } }
+    }
     Page("Personalization", onBack) {
         PcSectionLabel("Custom instructions")
         PcField(
             text,
-            onValueChange = { text = it; settingsVm.update { s -> s.copy(customInstructions = it) } },
+            onValueChange = { text = it },
             placeholder = "Tell the agent how you like to work - style, tools, conventions...",
             singleLine = false,
             minLines = 5,
@@ -419,10 +433,25 @@ private fun ProvidersPage(vm: ChatViewModel, onOpenProvider: (String) -> Unit, o
             Spacer(Modifier.height(6.dp))
         }
         PcSectionLabel("Providers")
+        if (vm.keysStoredInPlaintext()) {
+            Text(
+                "This device's secure keystore is unavailable, so API keys are stored unencrypted. Re-enter " +
+                    "your keys; avoid storing sensitive keys on this device.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.error,
+                modifier = Modifier.padding(horizontal = Spacing.m, vertical = Spacing.xs),
+            )
+        }
+        // Hoist the provider list and the key lookup out of per-recomposition work: keyFor() decrypts from
+        // EncryptedSharedPreferences, so doing it per row per frame ran crypto on every toggle/recompose.
+        // Keyed on state.models (changes when custom providers reload); a fresh entry after editing a key
+        // on the detail page resets this remember because the page leaves the AnimatedContent composition.
+        val providers = remember(state.models) { vm.allProviders() }
+        val keyedIds = remember(state.models) { providers.filter { vm.keyFor(it.id).isNotBlank() }.map { it.id }.toSet() }
         PcGroup {
-            vm.allProviders().forEach { preset ->
+            providers.forEach { preset ->
                 val enabled = preset.id !in state.disabledProviders
-                val hasKey = vm.keyFor(preset.id).isNotBlank()
+                val hasKey = preset.id in keyedIds
                 PcRow(onClick = { onOpenProvider(preset.id) }) {
                     Column(Modifier.weight(1f)) {
                         Text(preset.displayName, style = MaterialTheme.typography.bodyLarge, color = if (enabled) colors.onBackground else colors.tertiary)

@@ -1,7 +1,6 @@
 package dev.phonecode.app.ui.chat
 
 import android.net.Uri
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
@@ -29,8 +28,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -64,20 +67,19 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
-import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.outlined.AccountTree
+import androidx.compose.material.icons.outlined.AttachFile
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Description
@@ -86,29 +88,32 @@ import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshots.SnapshotStateList
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.toMutableStateList
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.onSizeChanged
@@ -121,6 +126,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -132,13 +138,13 @@ import dev.phonecode.app.agent.ModelOption
 import dev.phonecode.app.agent.PermissionRequest
 import dev.phonecode.app.agent.QuestionRequest
 import dev.phonecode.app.agent.ToolStatus
-import dev.phonecode.app.git.GitViewModel
 import dev.phonecode.app.ui.components.ContextRing
-import dev.phonecode.app.ui.components.PcButton
 import dev.phonecode.app.ui.components.PcDivider
 import dev.phonecode.app.ui.components.PcIconButton
 import dev.phonecode.app.ui.components.PcRoundButton
 import dev.phonecode.app.ui.components.PcToggle
+import dev.phonecode.app.ui.components.pressFeedback
+import androidx.compose.material3.ripple
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
 import dev.chrisbanes.haze.hazeSource
@@ -161,8 +167,10 @@ import dev.phonecode.provider.domain.ReasoningEffort
 import dev.phonecode.tools.UserAnswer
 import dev.phonecode.tools.todo.TodoItem
 import dev.phonecode.tools.todo.TodoStatus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -173,7 +181,6 @@ private val STAMP = SimpleDateFormat("HH:mm · d MMM", Locale.getDefault())
 @Composable
 fun ChatScreen(
     vm: ChatViewModel,
-    gitVm: GitViewModel,
     onOpenDrawer: () -> Unit,
     sendOnEnter: Boolean = true,
 ) {
@@ -186,14 +193,17 @@ fun ChatScreen(
     // for now") - platform motion and scrim, native back/swipe dismissal, zero morph jank.
     var toolsOpen by remember { mutableStateOf(false) }
     var modelOpen by remember { mutableStateOf(false) }
-    // Hoisted so the action row can deep-link straight to the git panel inside the tools sheet.
+    var contextOpen by remember { mutableStateOf(false) }
+    // Hoisted so the tools sheet can open straight onto a specific sub-panel (e.g. Thinking).
     var menuPanel by remember { mutableStateOf("main") }
     var composerHeight by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     val empty = state.lines.isEmpty() && state.streaming.isEmpty() && state.streamingReasoning.isEmpty()
 
     LaunchedEffect(state.lines.size, state.streaming.length, state.streamingReasoning.length) {
-        val extra = (if (state.streamingReasoning.isNotEmpty()) 1 else 0) + (if (state.streaming.isNotEmpty()) 1 else 0)
+        // The list appends exactly one combined streaming item, so this is a single flag, not a sum.
+        val extra = if (state.streamingReasoning.isNotEmpty() || state.streaming.isNotEmpty()) 1 else 0
         val count = state.lines.size + extra
         // Instant, not animated: iOS doesn't animate the sender's own scroll, and per-token
         // animated scrolling during streaming is what reads as "lag".
@@ -306,7 +316,6 @@ fun ChatScreen(
                                         completedAt = state.lastCompletedAt,
                                         onCopy = { },
                                         onRedo = vm::redo,
-                                        onBranch = { gitVm.refresh(); menuPanel = "git"; toolsOpen = true },
                                         copyText = line.text,
                                     )
                                     // Thinking that wasn't followed by assistant text (e.g. think → tool call):
@@ -316,7 +325,7 @@ fun ChatScreen(
                                         reasoning = line.text,
                                         streaming = false,
                                         showActions = false, completedAt = null,
-                                        onCopy = {}, onRedo = {}, onBranch = {}, copyText = "",
+                                        onCopy = {}, onRedo = {}, copyText = "",
                                     )
                                     is ChatLine.ToolActivity -> ToolActivityView(line)
                                 }
@@ -330,7 +339,7 @@ fun ChatScreen(
                                         reasoning = state.streamingReasoning.ifEmpty { null },
                                         streaming = true,
                                         showActions = false, completedAt = null,
-                                        onCopy = {}, onRedo = {}, onBranch = {}, copyText = "",
+                                        onCopy = {}, onRedo = {}, copyText = "",
                                     )
                                 }
                             }
@@ -353,29 +362,64 @@ fun ChatScreen(
             modifier = Modifier.align(Alignment.TopCenter),
         ) {
             Box(
-                Modifier.fillMaxWidth().height(statusInset + 4.dp)
-                    .blurFade(hazeState, bandStyle, fromTop = true),
+                Modifier.fillMaxWidth().height(statusInset + 14.dp)
+                    .blurFade(hazeState, bandStyle, fromTop = true, edgeColor = colors.background),
             )
         }
-        Box(Modifier.align(Alignment.TopStart).padding(top = statusInset + 6.dp, start = 12.dp).blurPill(hazeState, hazeStyle).border(1.dp, colors.outline.copy(alpha = 0.6f), ShapePill)) {
+        Box(Modifier.align(Alignment.TopStart).padding(top = statusInset + 6.dp, start = 12.dp).clip(ShapePill).background(colors.surfaceContainerHigh)) {
             // Opening the drawer clears any open overlay so Back/scrim semantics stay unambiguous.
             PcIconButton(Icons.Filled.Menu, "Menu") { toolsOpen = false; modelOpen = false; onOpenDrawer() }
         }
-        Box(
-            Modifier.align(Alignment.TopCenter).padding(top = statusInset + 9.dp)
-                .widthIn(max = 230.dp).blurPill(hazeState, hazeStyle),
+        Column(
+            Modifier.align(Alignment.TopCenter).padding(top = statusInset + 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Text(
-                chatTitle(state),
-                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
-                color = colors.onBackground,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp),
-            )
+            Box(Modifier.widthIn(max = 230.dp).blurPill(hazeState, hazeStyle)) {
+                Text(
+                    chatTitle(state),
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = colors.onBackground,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+            // Model selector moved out of the composer into the title: tap to switch.
+            Row(
+                Modifier.padding(top = 3.dp).blurPill(hazeState, hazeStyle, shape = ShapePill)
+                    .clickable { toolsOpen = false; modelOpen = true }
+                    .padding(start = 11.dp, end = 7.dp, top = 3.dp, bottom = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                Text(
+                    modelShortLabel(state),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = colors.secondary,
+                    maxLines = 1,
+                )
+                Icon(Icons.Filled.KeyboardArrowDown, "Switch model", tint = colors.secondary, modifier = Modifier.size(15.dp))
+            }
         }
-        Box(Modifier.align(Alignment.TopEnd).padding(top = statusInset + 6.dp, end = 12.dp).blurPill(hazeState, hazeStyle).border(1.dp, colors.outline.copy(alpha = 0.6f), ShapePill)) {
-            PcIconButton(Icons.Filled.Add, "New chat") { vm.newChat() }
+        Row(
+            Modifier.align(Alignment.TopEnd).padding(top = statusInset + 6.dp, end = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Context usage is a glanceable ring now (out of the tools menu); tap for the breakdown.
+            val ctxUsed = state.usageInput + state.usageOutput
+            val ctxFrac = state.contextLimit?.let { if (it > 0) ctxUsed.toFloat() / it else 0f } ?: 0f
+            Box(
+                Modifier.size(40.dp).clip(ShapePill).background(colors.surfaceContainerHigh)
+                    .clickable { toolsOpen = false; modelOpen = false; contextOpen = true }
+                    .semantics { contentDescription = "Context usage" },
+                contentAlignment = Alignment.Center,
+            ) {
+                ContextRing(fraction = ctxFrac, modifier = Modifier.size(22.dp), stroke = 2.5f)
+            }
+            Box(Modifier.clip(ShapePill).background(colors.surfaceContainerHigh)) {
+                PcIconButton(Icons.Filled.Add, "New chat") { vm.newChat() }
+            }
         }
 
         // Bottom dissolve band behind the floating composer AND the nav bar: text stays visible
@@ -390,8 +434,8 @@ fun ChatScreen(
         ) {
             Box(
                 Modifier.fillMaxWidth()
-                    .height(with(chromeDensity) { composerHeight.toDp() } + bottomInset + 26.dp)
-                    .blurFade(hazeState, bandStyle, fromTop = false),
+                    .height(with(chromeDensity) { composerHeight.toDp() } + bottomInset + 24.dp)
+                    .blurFade(hazeState, bandStyle, fromTop = false, edgeColor = colors.background),
             )
         }
         Column(
@@ -412,7 +456,6 @@ fun ChatScreen(
                 hazeState = hazeState,
                 hazeStyle = hazeStyle,
                 onMenuToggle = { menuPanel = "main"; toolsOpen = true },
-                onModelTap = { modelOpen = true },
                 onSend = {
                     rootView.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
                     vm.send(input); input = ""; toolsOpen = false
@@ -428,8 +471,10 @@ fun ChatScreen(
         // picking (device feedback: "attaching images/files doesn't work").
         val attachContext = LocalContext.current
         val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-            if (uri != null) {
-                val attached = readAttachment(attachContext, uri)
+            // Read off the main thread: a SAF/cloud content URI can block on disk or network, and this
+            // callback runs on the UI thread. The when() resumes back on Main to touch input/surfaceError.
+            if (uri != null) scope.launch {
+                val attached = withContext(Dispatchers.IO) { readAttachment(attachContext, uri) }
                 when (attached) {
                     null -> vm.surfaceError("Couldn't read that file.")
                     is Attachment.Binary -> vm.surfaceError("Only text files can be attached for now - image support is coming.")
@@ -442,45 +487,23 @@ fun ChatScreen(
             }
         }
 
-        // Round-4 popouts: standard M3 modal bottom sheets - the platform's own surface, scrim,
-        // spring motion, drag handle, swipe + back dismissal. Contents are unchanged.
-        val sheetScope = rememberCoroutineScope()
-        if (toolsOpen) {
-            val toolsSheet = rememberModalBottomSheetState()
-            fun closeTools(then: () -> Unit = {}) {
-                sheetScope.launch { toolsSheet.hide() }.invokeOnCompletion { toolsOpen = false; then() }
-            }
-            ModalBottomSheet(
-                onDismissRequest = { toolsOpen = false },
-                sheetState = toolsSheet,
-                containerColor = colors.surfaceContainerLow,
-            ) {
-                WrenchMenu(
-                    state = state,
-                    vm = vm,
-                    gitVm = gitVm,
-                    panel = menuPanel,
-                    onPanel = { menuPanel = it },
-                    onPickFile = { closeTools { picker.launch(arrayOf("*/*")) } },
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-            }
+        // Native Material bottom sheets (the Android-standard picker, like Claude's app): the
+        // platform owns the slide-up / scrim / drag-to-dismiss motion. `close` hides with that same
+        // animation before the trigger flag flips, so taps that pick-and-close slide instead of snap.
+        if (toolsOpen) PcSheet(onDismiss = { toolsOpen = false }) { close ->
+            WrenchMenu(
+                state = state,
+                vm = vm,
+                panel = menuPanel,
+                onPanel = { menuPanel = it },
+                onPickFile = { picker.launch(arrayOf("*/*")); close() },
+            )
         }
-        if (modelOpen) {
-            val modelSheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-            ModalBottomSheet(
-                onDismissRequest = { modelOpen = false },
-                sheetState = modelSheet,
-                containerColor = colors.surfaceContainerLow,
-            ) {
-                ModelSheet(
-                    state = state,
-                    vm = vm,
-                    onDone = {
-                        sheetScope.launch { modelSheet.hide() }.invokeOnCompletion { modelOpen = false }
-                    },
-                )
-            }
+        if (modelOpen) PcSheet(onDismiss = { modelOpen = false }) { close ->
+            ModelSheet(state = state, vm = vm, onDone = close)
+        }
+        if (contextOpen) PcSheet(onDismiss = { contextOpen = false }) {
+            ContextPopover(state)
         }
 
         state.pendingPermission?.let { r ->
@@ -489,6 +512,29 @@ fun ChatScreen(
         state.pendingQuestion?.let { r ->
             QuestionDialog(r, onSubmit = { vm.resolveQuestion(it) }, onDismiss = { vm.resolveQuestion(emptyList()) })
         }
+    }
+}
+
+/**
+ * Native Material modal bottom sheet host - the standard Android picker (the one Claude's app uses
+ * for model switching). The platform owns the slide-up, scrim and drag-to-dismiss motion. [content]
+ * receives a `close` lambda that hides the sheet WITH that animation before [onDismiss] flips the
+ * caller's trigger flag, so a pick-and-close action slides away instead of vanishing.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PcSheet(onDismiss: () -> Unit, content: @Composable ColumnScope.(close: () -> Unit) -> Unit) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    val close: () -> Unit = {
+        scope.launch { sheetState.hide() }.invokeOnCompletion { if (!sheetState.isVisible) onDismiss() }
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Column(Modifier.fillMaxWidth().navigationBarsPadding()) { content(close) }
     }
 }
 
@@ -556,14 +602,16 @@ private fun EmptyState(onSuggestion: (String) -> Unit, modifier: Modifier = Modi
             "Refactor a function",
             "Set up a git project",
         ).forEach { suggestion ->
+            val chipInteraction = remember(suggestion) { MutableInteractionSource() }
             Text(
                 suggestion,
                 style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Normal),
                 color = colors.secondary,
                 modifier = Modifier
                     .padding(vertical = 4.dp)
+                    .pressFeedback(chipInteraction, pressedScale = 0.96f)
                     .clip(ShapePill)
-                    .clickable { onSuggestion(suggestion) }
+                    .clickable(interactionSource = chipInteraction, indication = ripple()) { onSuggestion(suggestion) }
                     .background(colors.surfaceContainer)
                     .border(1.dp, colors.outline, ShapePill)
                     .padding(horizontal = 16.dp, vertical = 9.dp),
@@ -607,7 +655,6 @@ private fun AssistantTurn(
     completedAt: Long?,
     onCopy: () -> Unit,
     onRedo: () -> Unit,
-    onBranch: () -> Unit,
     copyText: String,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -648,8 +695,8 @@ private fun AssistantTurn(
             }
             AnimatedVisibility(
                 visible = open,
-                enter = expandVertically(animationSpec = PhoneSprings.standardSpec()) + fadeIn(PhoneTweens.popEnter),
-                exit = shrinkVertically(animationSpec = PhoneSprings.standardSpec()) + fadeOut(PhoneTweens.popExit),
+                enter = expandVertically(animationSpec = PhoneSprings.emphasizedSpec()) + fadeIn(PhoneTweens.popEnter),
+                exit = shrinkVertically(animationSpec = PhoneSprings.emphasizedSpec()) + fadeOut(PhoneTweens.popExit),
             ) {
                 Row(Modifier.padding(start = 3.dp, top = 6.dp).height(IntrinsicSize.Min)) {
                     Box(Modifier.width(1.5.dp).fillMaxHeight().background(colors.outlineVariant))
@@ -664,6 +711,10 @@ private fun AssistantTurn(
         }
 
         if (text.isNotEmpty() || streaming) {
+            // ponytail: splitFenced re-scans the whole reply each token -> O(n^2) over a long stream.
+            // Bounded by reply length and dwarfed by markdown recomposition; settled segments are memoized
+            // downstream by String equality so they don't re-render. Upgrade path if profiling flags it:
+            // parse only the tail past the last settled fence boundary.
             val segments = remember(text) { splitFenced(text) }
             Column(Modifier.fillMaxWidth().padding(top = if (reasoning != null) 11.dp else 0.dp), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
                 segments.forEachIndexed { i, seg ->
@@ -692,7 +743,6 @@ private fun AssistantTurn(
                     }
                 }
                 ActionIcon(Icons.Filled.Refresh, "Redo", onRedo)
-                ActionIcon(Icons.Outlined.AccountTree, "Git", onBranch)
                 if (completedAt != null) {
                     Text(
                         STAMP.format(Date(completedAt)),
@@ -900,7 +950,6 @@ private fun Composer(
     hazeState: HazeState,
     hazeStyle: HazeStyle,
     onMenuToggle: () -> Unit,
-    onModelTap: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
     sendOnEnter: Boolean,
@@ -916,15 +965,15 @@ private fun Composer(
             Row(
                 Modifier.fillMaxWidth()
                     .neuralRing(active = state.isRunning, shape = ShapeComposer)
-                    .blurPill(hazeState, hazeStyle, shape = ShapeComposer)
-                    .border(1.dp, colors.outline.copy(alpha = 0.6f), ShapeComposer)
+                    .clip(ShapeComposer)
+                    .background(colors.surfaceContainerHigh)
                     .animateContentSize(spring(dampingRatio = 1f, stiffness = Spring.StiffnessMediumLow))
                     .padding(horizontal = 8.dp, vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                // Bare icon, no blob - the capsule itself is the only container.
-                PcIconButton(Icons.Filled.Build, "Tools", tint = colors.secondary, onClick = onMenuToggle)
+                // ChatGPT-style: a bare + opens tools/attach; the capsule itself is the only container.
+                PcIconButton(Icons.Filled.Add, "Tools", tint = colors.secondary, onClick = onMenuToggle)
                 Box(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     if (input.isEmpty()) Text("Message...", style = MaterialTheme.typography.bodySmall, color = colors.secondary)
                     BasicTextField(
@@ -940,26 +989,6 @@ private fun Composer(
                         },
                         keyboardActions = KeyboardActions(onSend = { if (input.isNotBlank() && !state.isRunning) onSend() }),
                         modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                // Grok's signature: the model pill lives in the composer and collapses to nothing
-                // the moment you type, re-expanding when the field empties. Tap -> model sheet
-                // (its own surface - device feedback: not the same place as the tools).
-                AnimatedVisibility(
-                    visible = input.isEmpty() && !state.isRunning,
-                    enter = expandHorizontally(animationSpec = PhoneSprings.standardSpec()) + fadeIn(PhoneTweens.popEnter),
-                    exit = shrinkHorizontally(animationSpec = PhoneSprings.standardSpec()) + fadeOut(PhoneTweens.popExit),
-                ) {
-                    Text(
-                        modelShortLabel(state),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = colors.secondary,
-                        maxLines = 1,
-                        modifier = Modifier
-                            .clip(ShapePill)
-                            .clickable(onClick = onModelTap)
-                            .background(colors.surfaceContainerHigh)
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
                     )
                 }
                 // Send exists only when it can act (text present or generation to stop); it pops in
@@ -1026,7 +1055,6 @@ private fun readAttachment(context: android.content.Context, uri: Uri): Attachme
 private fun WrenchMenu(
     state: ChatUiState,
     vm: ChatViewModel,
-    gitVm: GitViewModel,
     panel: String,
     onPanel: (String) -> Unit,
     onPickFile: () -> Unit,
@@ -1048,36 +1076,26 @@ private fun WrenchMenu(
                         PickRow(label = e.display(), selected = state.effort == e) { vm.setEffort(e); onPanel("main") }
                     }
                 }
-                "context" -> PickList(title = "Context", onBack = { onPanel("main") }) {
-                    ContextPopover(state)
-                }
-                "git" -> PickList(title = "Git", onBack = { onPanel("main") }) {
-                    GitPopover(gitVm)
-                }
-                else -> Column(Modifier.padding(horizontal = 10.dp, vertical = 4.dp)) {
-                    MenuRow(icon = Icons.Filled.Image, label = "Photo / file", onClick = onPickFile)
-                    PcDivider(Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
-                    KvRow(
-                        "Thinking",
-                        if (vm.supportsReasoning(state.selected)) state.effort.display() else "Off - model has none",
-                    ) { onPanel("thinking") }
-                    // Plan is a TOGGLE, not a mode list (device feedback): on = read-only
-                    // planning, off = build. The mode enum survives underneath.
-                    Row(
-                        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small)
-                            .heightIn(min = 48.dp).padding(horizontal = 14.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("Plan mode", style = MaterialTheme.typography.bodyLarge, color = colors.onBackground, modifier = Modifier.weight(1f))
-                        PcToggle(checked = state.agentMode == AgentMode.PLAN) { on ->
-                            vm.setAgentMode(if (on) AgentMode.PLAN else AgentMode.BUILD)
-                        }
-                    }
-                    PcDivider(Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
-                    val used = state.usageInput + state.usageOutput
-                    val ctxValue = state.contextLimit?.let { if (it > 0) "${(used * 100 / it).toInt()}%" else fmt(used) } ?: fmt(used)
-                    KvRow("Context", ctxValue) { onPanel("context") }
-                    KvRow("Git", "") { gitVm.refresh(); onPanel("git") }
+                else -> Column(Modifier.padding(horizontal = 8.dp, vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Text(
+                        "Tools",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.tertiary,
+                        modifier = Modifier.padding(start = 14.dp, top = 2.dp, bottom = 6.dp),
+                    )
+                    ToolRow(icon = Icons.Outlined.AttachFile, label = "Photo or file", onClick = onPickFile)
+                    ToolRow(
+                        icon = Icons.Outlined.AutoAwesome,
+                        label = "Thinking",
+                        value = if (vm.supportsReasoning(state.selected)) state.effort.display() else "Off",
+                        onClick = { onPanel("thinking") },
+                    )
+                    ToolRow(
+                        icon = Icons.Outlined.Checklist,
+                        label = "Plan mode",
+                        toggle = state.agentMode == AgentMode.PLAN,
+                        onToggle = { on -> vm.setAgentMode(if (on) AgentMode.PLAN else AgentMode.BUILD) },
+                    )
                 }
             }
         }
@@ -1227,30 +1245,40 @@ private fun PickRow(label: String, selected: Boolean, onClick: () -> Unit) {
 // don't follow any design language"): 48dp menu rows, 14dp side padding, bodyLarge labels,
 // onSurfaceVariant secondaries, real chevron glyphs.
 
+/**
+ * One tools-menu row, stripped to essentials: a thin line icon, the label, then a value+chevron OR
+ * a toggle. No tonal tile, no subtitle - the row IS the button, with a spring press-pop on touch.
+ */
 @Composable
-private fun MenuRow(icon: ImageVector, label: String, onClick: () -> Unit) {
+private fun ToolRow(
+    icon: ImageVector,
+    label: String,
+    value: String? = null,
+    toggle: Boolean? = null,
+    onToggle: ((Boolean) -> Unit)? = null,
+    onClick: (() -> Unit)? = null,
+) {
     val colors = MaterialTheme.colorScheme
+    val interaction = remember { MutableInteractionSource() }
     Row(
-        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable(onClick = onClick).heightIn(min = 48.dp).padding(horizontal = 14.dp),
+        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
+            .then(
+                if (onClick != null)
+                    Modifier.pressFeedback(interaction, pressedScale = 0.97f)
+                        .clickable(interactionSource = interaction, indication = ripple(), onClick = onClick)
+                else Modifier,
+            )
+            .heightIn(min = 50.dp).padding(start = 14.dp, end = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Icon(icon, null, tint = colors.onSurfaceVariant, modifier = Modifier.size(20.dp))
-        Text(label, style = MaterialTheme.typography.bodyLarge, color = colors.onBackground)
-    }
-}
-
-@Composable
-private fun KvRow(key: String, value: String, onClick: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    Row(
-        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.small).clickable(onClick = onClick).heightIn(min = 48.dp).padding(horizontal = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Text(key, style = MaterialTheme.typography.bodyMedium, color = colors.onSurfaceVariant, modifier = Modifier.width(72.dp))
-        Text(value, style = MaterialTheme.typography.bodyLarge, color = colors.onBackground, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = colors.tertiary, modifier = Modifier.size(20.dp))
+        Icon(icon, null, tint = colors.secondary, modifier = Modifier.size(20.dp))
+        Text(label, style = MaterialTheme.typography.bodyLarge, color = colors.onBackground, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (value != null) {
+            Text(value, style = MaterialTheme.typography.bodyMedium, color = colors.tertiary, maxLines = 1)
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = colors.tertiary, modifier = Modifier.size(18.dp))
+        }
+        if (toggle != null && onToggle != null) PcToggle(checked = toggle, onChange = onToggle)
     }
 }
 
@@ -1260,10 +1288,11 @@ private fun KvRow(key: String, value: String, onClick: () -> Unit) {
 
 @Composable
 private fun PopoverCard(modifier: Modifier = Modifier, content: @Composable ColumnScopeAlias.() -> Unit) {
-    // Hosted inside a Material DropdownMenu, which supplies container, elevation, and shape -
-    // this only sizes and pads the content.
+    // Rendered inside a full-width ModalBottomSheet (ContextPopover), which supplies the surface and
+    // scrim - this just fills the sheet width and pads the content (the old 280dp cap left a narrow,
+    // start-aligned card floating in a full-width sheet).
     Column(
-        modifier.widthIn(min = 212.dp, max = 280.dp).padding(Spacing.s),
+        modifier.fillMaxWidth().padding(Spacing.s),
         content = content,
     )
 }
@@ -1302,62 +1331,13 @@ private fun UsageRow(label: String, value: String, swatch: androidx.compose.ui.g
     }
 }
 
-@Composable
-private fun GitPopover(gitVm: GitViewModel) {
-    val colors = MaterialTheme.colorScheme
-    val git by gitVm.state.collectAsStateWithLifecycle()
-    var showBranches by remember { mutableStateOf(false) }
-    PopoverCard {
-        Text(
-            "GIT · ${(git.status?.branch ?: "no repo").uppercase()}",
-            style = MaterialTheme.typography.labelSmall, color = colors.tertiary, modifier = Modifier.padding(start = 4.dp, bottom = 8.dp),
-        )
-        if (!git.isRepo) {
-            PcButton("Initialize repository", filled = false) { gitVm.init() }
-        } else {
-            val s = git.status
-            UsageRow("Staged", "${s?.staged?.size ?: 0}", colors.onBackground)
-            UsageRow("Modified", "${s?.unstaged?.size ?: 0}", colors.secondary)
-            UsageRow("Untracked", "${s?.untracked?.size ?: 0}", colors.tertiary)
-            // Branch switcher (collapsed by default - most users never need it).
-            Row(
-                Modifier.fillMaxWidth().clip(MaterialTheme.shapes.extraSmall).clickable { showBranches = !showBranches }.padding(vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Branches", style = MaterialTheme.typography.labelMedium, color = colors.secondary, modifier = Modifier.weight(1f))
-                Text(if (showBranches) "▴" else "▾", style = MaterialTheme.typography.labelMedium, color = colors.tertiary)
-            }
-            if (showBranches) {
-                git.branches.forEach { branch ->
-                    val current = branch == git.status?.branch
-                    Row(
-                        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.extraSmall)
-                            .clickable(enabled = !current) { gitVm.checkout(branch); showBranches = false }
-                            .padding(vertical = 7.dp, horizontal = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            branch,
-                            style = MaterialTheme.typography.labelMedium.copy(fontFamily = PcMono),
-                            color = if (current) colors.onBackground else colors.secondary,
-                            fontWeight = if (current) FontWeight.SemiBold else FontWeight.Normal,
-                            maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
-                        )
-                        if (current) Icon(Icons.Filled.Check, null, tint = colors.onBackground, modifier = Modifier.size(14.dp))
-                    }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            PcButton("Save a snapshot", filled = true) {
-                gitVm.stageAll()
-                gitVm.commit("Snapshot " + STAMP.format(Date()))
-            }
-        }
-    }
+private fun fmt(n: Long): String = when {
+    n >= 1_000_000 -> trimZero(n / 1_000_000.0) + "M"
+    n >= 1_000 -> trimZero(n / 1_000.0) + "k"
+    else -> n.toString()
 }
 
-private fun fmt(n: Long): String = if (n >= 1000) "%.1fk".format(n / 1000.0) else n.toString()
+private fun trimZero(v: Double): String = "%.1f".format(v).removeSuffix(".0")
 
 // ---------------------------------------------------------------------------------------------
 // Dialogs
@@ -1405,8 +1385,22 @@ private fun PermissionDialog(request: PermissionRequest, onApprove: () -> Unit, 
 @Composable
 private fun QuestionDialog(request: QuestionRequest, onSubmit: (List<UserAnswer>) -> Unit, onDismiss: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val selections = remember(request) { request.questions.map { mutableStateListOf<String>() } }
-    val customAnswers = remember(request) { request.questions.map { mutableStateOf("") } }
+    // rememberSaveable so in-progress selections and custom text survive rotation / process death while the
+    // dialog is open (the pending question itself lives in the ViewModel; only this partial input was fragile).
+    val selections = rememberSaveable(
+        request,
+        saver = listSaver<List<SnapshotStateList<String>>, ArrayList<String>>(
+            save = { orig -> orig.map { ArrayList(it) } },
+            restore = { saved -> saved.map { it.toMutableStateList() } },
+        ),
+    ) { request.questions.map { mutableStateListOf<String>() } }
+    val customAnswers = rememberSaveable(
+        request,
+        saver = listSaver<List<MutableState<String>>, String>(
+            save = { orig -> orig.map { it.value } },
+            restore = { saved -> saved.map { mutableStateOf(it) } },
+        ),
+    ) { request.questions.map { mutableStateOf("") } }
     PcDialog(onDismiss) {
         Text("The agent has a question", style = MaterialTheme.typography.titleMedium, color = colors.onBackground, modifier = Modifier.padding(bottom = 8.dp))
         Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {

@@ -4,7 +4,6 @@ import dev.phonecode.provider.preset.AuthScheme
 import dev.phonecode.provider.preset.ProviderPreset
 import dev.phonecode.provider.preset.WireFormat
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 
 @Serializable
@@ -29,7 +28,7 @@ data class ProvidersConfig(val provider: Map<String, CustomProvider> = emptyMap(
  */
 class CustomProviderRepository(private val configDir: File) {
     private val file = File(configDir, "providers.json")
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
+    private val json = storeJson
 
     fun load(): ProvidersConfig =
         if (file.exists()) runCatching { json.decodeFromString(ProvidersConfig.serializer(), file.readText()) }.getOrDefault(ProvidersConfig())

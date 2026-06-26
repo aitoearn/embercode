@@ -36,6 +36,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -66,7 +67,7 @@ fun OnboardingScreen(
     onDone: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
-    var step by remember { mutableStateOf(0) }
+    var step by rememberSaveable { mutableStateOf(0) }
     androidx.activity.compose.BackHandler(enabled = step > 0) { step = 0 }
 
     Box(Modifier.fillMaxSize().background(colors.background).systemBarsPadding()) {
@@ -171,6 +172,10 @@ private fun Connect(onConnectModels: () -> Unit, onConnectGitHub: () -> Unit, on
         Spacer(Modifier.height(24.dp))
         Box(Modifier.entrance(150)) {
             PcGroup {
+                // Both model options land on the Providers page on purpose: it hosts BOTH the API-key entry
+                // and the "Sign in with ChatGPT (Codex)" button. Onboarding doesn't start the Codex OAuth
+                // directly because the Codex model path isn't wired yet, so a one-tap sign-in here would
+                // leave the user "signed in" with no usable models.
                 OptionRow(
                     icon = Icons.Outlined.Forum,
                     title = "Sign in with ChatGPT",

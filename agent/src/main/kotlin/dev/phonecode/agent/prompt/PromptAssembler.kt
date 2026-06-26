@@ -44,7 +44,9 @@ object PromptAssembler {
             return@buildString
         }
         described.forEach { appendLine("- ${it.name}: ${it.promptSnippet}") }
-        val guidelines = tools.flatMap { it.promptGuidelines }.distinct()
+        // Guidelines only from the tools actually listed above, so the prompt never references a tool the
+        // model can't see (a tool with no promptSnippet is hidden from the list).
+        val guidelines = described.flatMap { it.promptGuidelines }.distinct()
         if (guidelines.isNotEmpty()) {
             appendLine()
             appendLine("Guidelines:")
