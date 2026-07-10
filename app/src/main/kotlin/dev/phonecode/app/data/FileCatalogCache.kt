@@ -11,7 +11,7 @@ class FileCatalogCache(cacheDir: File) : CatalogCache {
         if (file.exists()) runCatching { file.readText() }.getOrNull() else null
 
     override fun write(json: String) {
-        runCatching { file.writeText(json) }
+        runCatching { file.writeTextAtomically(json) }
     }
 
     override fun ageMillis(): Long? =

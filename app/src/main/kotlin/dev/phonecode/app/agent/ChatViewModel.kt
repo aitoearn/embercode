@@ -37,6 +37,8 @@ import dev.phonecode.app.data.toPersisted
 import dev.phonecode.provider.catalog.Catalog
 import dev.phonecode.provider.catalog.CatalogLoader
 import dev.phonecode.provider.domain.ChatMessage
+import dev.phonecode.provider.domain.FailureKind
+import dev.phonecode.provider.domain.LlmProvider
 import dev.phonecode.provider.domain.MessagePart
 import dev.phonecode.provider.domain.ReasoningEffort
 import dev.phonecode.provider.domain.Role
@@ -76,6 +78,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.io.File
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.TimeUnit
 
 data class ModelOption(val providerId: String, val modelId: String, val label: String)
@@ -85,6 +89,7 @@ enum class ToolStatus { RUNNING, DONE, ERROR }
 data class PermissionRequest(val tool: String, val summary: String)
 
 data class QuestionRequest(val questions: List<UserQuestion>)
+data class RetryState(val attempt: Int, val message: String)
 
 sealed interface ChatLine {
     data class User(val text: String, val images: List<MessagePart.Image> = emptyList()) : ChatLine
@@ -106,6 +111,7 @@ data class ChatUiState(
     val autoAccept: Boolean = false,
     val pendingPermission: PermissionRequest? = null,
     val pendingQuestion: QuestionRequest? = null,
+    val retry: RetryState? = null,
     val todos: List<TodoItem> = emptyList(),
     val mcpServers: Map<String, McpServerConfig> = emptyMap(),
     val mcpToolCount: Int = 0,
@@ -132,6 +138,7 @@ data class ChatUiState(
     val githubVerifyUri: String? = null,
     val notice: String? = null,
     val error: String? = null,
+    val interruptedTurn: Boolean = false,
 )
 
 /** Orchestrates the agent loop for the chat UI: builds provider + tools + loop, streams events into UI state. */
@@ -158,8 +165,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val http = OkHttpClient.Builder()
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(180, TimeUnit.SECONDS)
+        .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
+    private val foregroundLeases = (app as PhoneCodeApplication).foregroundLeases
+    private val turnLease = AtomicReference<String?>(null)
+    private val authLease = AtomicReference<String?>(null)
+    private val githubAuthLease = AtomicReference<String?>(null)
     private val todoStore = TodoStore()
     private val configDir = File(app.filesDir, "config")
     private val repo = McpSkillRepository(configDir)
@@ -192,8 +203,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun providerFor(id: String): ProviderPreset? {
         val preset = BuiltInPresets.byId(id) ?: customPresets[id] ?: return null
         if (preset.wireFormat != WireFormat.OPENAI_COMPAT) return preset
-        val catalogId = if (id == "opencode-zen") "opencode" else id
-        return preset.withCatalogApi(catalog[catalogId]?.api)
+        return preset.withCatalogApi(catalog[catalogProviderId(id)]?.api)
     }
 
     /** All providers for Settings: built-ins plus any agent-defined custom providers. */
@@ -201,7 +211,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The selected model's token limits from the models.dev catalog, then the custom config, if known. */
     private fun limitFor(option: ModelOption?): dev.phonecode.provider.catalog.Limit? = option?.let {
-        catalog[it.providerId]?.models?.get(it.modelId)?.limit
+        catalog[catalogProviderId(it.providerId)]?.models?.get(it.modelId)?.limit
             ?: customLimits["${it.providerId}/${it.modelId}"]?.let { c -> dev.phonecode.provider.catalog.Limit(context = c) }
             // The Codex backend serves a 272k context window for all its models (per the codex catalog),
             // smaller than the same models' API limits, so compaction fires before it rejects the request.
@@ -261,10 +271,24 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // the body off-thread and have send() await it.
         runCatching {
             sessionStore.loadLatest()?.let { latest ->
+                val interrupted = latest.activeTurn
                 sessionId = latest.id
                 setActiveProject(latest.projectId)
-                history = latest.messages.map { it.toDomain() }
-                _state.update { it.copy(lines = history.toChatLines(), currentSessionId = latest.id, currentProjectId = latest.projectId) }
+                history = latest.messages.map { it.toDomain() }.let {
+                    if (interrupted) repairInterruptedHistory(it) else it
+                }
+                _state.update {
+                    it.copy(
+                        lines = history.toChatLines(),
+                        currentSessionId = latest.id,
+                        currentProjectId = latest.projectId,
+                        error = if (interrupted) TURN_INTERRUPTED_MESSAGE else it.error,
+                        interruptedTurn = interrupted,
+                    )
+                }
+                if (interrupted) {
+                    sessionStore.save(latest.copy(messages = history.map { it.toPersisted() }, activeTurn = false))
+                }
             }
         }
         // Load MCP config + discover skills, then connect remote MCP servers and fold their tools in.
@@ -303,7 +327,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     // recents) over the hardcoded default, then any selection already made this session.
                     val recentKey = modelPrefs.recents().firstOrNull()
                     val resolved = merged.firstOrNull { modelKey(it) == recentKey }
-                        ?: merged.firstOrNull { it.providerId == current?.providerId && it.modelId == current?.modelId }
+                        ?: merged.firstOrNull { it.providerId == current?.providerId && it.modelId == current.modelId }
                         ?: merged.first()
                     s.copy(models = merged, selected = resolved, contextLimit = limitFor(resolved)?.context)
                 }
@@ -327,11 +351,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 out += (live + builtInModels().filter { it.providerId == "codex" }).distinctBy { it.modelId }
                 return@forEach
             }
-            val key = when {
-                preset.id == "opencode-zen" -> catalog.keys.firstOrNull { it == "opencode-zen" || it == "opencode" }
-                else -> catalog.keys.firstOrNull { it == preset.id }
-            }
-            val info = key?.let { catalog[it] }
+            val info = catalog[catalogProviderId(preset.id)]
             if (info != null && info.models.isNotEmpty()) {
                 info.models.values.sortedBy { it.name }.forEach { model ->
                     out += ModelOption(preset.id, model.id, "${preset.displayName} · ${model.name}")
@@ -368,12 +388,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * moves the workspace onto its own branch so the agent's changes stay isolated from main.
      * Best-effort - a failure (no repo, detached head) must never block the send.
      */
-    private fun autoBranchIfEnabled(dir: File) {
+    private fun autoBranchIfEnabled(dir: File, taskSessionId: String = sessionId) {
         if (!appSettings.load().gitAutoBranch) return
         if (!File(dir, ".git").exists()) return
         runCatching {
             org.eclipse.jgit.api.Git.open(dir).use { git ->
-                val branch = "task-" + sessionId.removePrefix("session-")
+                val branch = "task-" + taskSessionId.removePrefix("session-")
                 if (git.repository.branch != branch) {
                     git.checkout().setName(branch).setCreateBranch(true).call()
                 }
@@ -396,7 +416,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun catalogModel(option: ModelOption?) = option?.let {
-        catalog[if (it.providerId == "codex") "openai" else it.providerId]?.models?.get(it.modelId)
+        catalog[catalogProviderId(it.providerId)]?.models?.get(it.modelId)
     }
 
     fun reasoningEfforts(option: ModelOption?): List<ReasoningEffort> {
@@ -540,7 +560,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         setActiveProject(projectId)
         todoStore.replace(emptyList())
         _state.update {
-            it.copy(lines = emptyList(), streaming = "", streamingReasoning = "", usageInput = 0, usageOutput = 0, error = null, currentSessionId = sessionId, currentProjectId = projectId)
+            it.copy(lines = emptyList(), streaming = "", streamingReasoning = "", usageInput = 0, usageOutput = 0, error = null, interruptedTurn = false, currentSessionId = sessionId, currentProjectId = projectId)
         }
         val id = sessionId
         viewModelScope.launch(Dispatchers.IO) {
@@ -568,13 +588,29 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         generation++ // bump on the main thread (single-writer for the turn guard), like send/cancel do
         viewModelScope.launch(Dispatchers.IO) {
             val loaded = sessionStore.load(id) ?: return@launch
-            val restored = loaded.messages.map { it.toDomain() }
+            val interrupted = loaded.activeTurn
+            val restored = loaded.messages.map { it.toDomain() }.let {
+                if (interrupted) repairInterruptedHistory(it) else it
+            }
             history = restored
             sessionId = loaded.id
             setActiveProject(loaded.projectId)
             todoStore.replace(emptyList())
             _state.update {
-                it.copy(lines = restored.toChatLines(), streaming = "", streamingReasoning = "", usageInput = 0, usageOutput = 0, error = null, currentSessionId = sessionId, currentProjectId = loaded.projectId)
+                it.copy(
+                    lines = restored.toChatLines(),
+                    streaming = "",
+                    streamingReasoning = "",
+                    usageInput = 0,
+                    usageOutput = 0,
+                    error = if (interrupted) TURN_INTERRUPTED_MESSAGE else null,
+                    interruptedTurn = interrupted,
+                    currentSessionId = sessionId,
+                    currentProjectId = loaded.projectId,
+                )
+            }
+            if (interrupted) {
+                sessionStore.save(loaded.copy(messages = restored.map { it.toPersisted() }, activeTurn = false))
             }
         }
     }
@@ -724,7 +760,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun setKey(providerId: String, key: String) = keyStore.put(providerId, key.trim())
     /** True when the device Keystore was unavailable and keys are stored UNENCRYPTED (warn on the providers screen). */
     fun secureStorageUnavailable(): Boolean = keyStore.secureStorageUnavailable
-    fun clearError() = _state.update { it.copy(error = null) }
+    fun clearError() = _state.update { it.copy(error = null, interruptedTurn = false) }
 
     /** UI-originated user-visible failures (e.g. unreadable attachment) share the error banner. */
     fun surfaceError(message: String) = fail(message)
@@ -735,45 +771,67 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     private val codexAuth by lazy { CodexAuth(http, store = keyStore::put, read = keyStore::get) }
 
+    private fun beginLease(slot: AtomicReference<String?>, prefix: String): String {
+        val id = "$prefix-${UUID.randomUUID()}"
+        foregroundLeases.acquire(id)
+        slot.getAndSet(id)?.let(foregroundLeases::release)
+        return id
+    }
+
+    private fun endLease(slot: AtomicReference<String?>, id: String? = slot.get()): Boolean {
+        if (id == null) return false
+        val endedCurrent = slot.compareAndSet(id, null)
+        foregroundLeases.release(id)
+        return endedCurrent
+    }
+
     /**
      * Starts the Codex OAuth flow: spins up the loopback listener and returns the authorization URL
      * for the UI to open in the browser. The exchange completes asynchronously; state flips when done.
      */
-    fun startCodexSignIn(): String? = runCatching {
-        val url = codexAuth.buildAuthUrl()
-        val verifier = codexAuth.pendingVerifier ?: return@runCatching null
-        val expectedState = codexAuth.pendingState ?: return@runCatching null
-        // Hold the process up for the whole browser round-trip. The redirect comes back to a tiny server on
-        // localhost:1455, but the moment the browser opens, PhoneCode is backgrounded and Android freezes it
-        // within seconds - the listener stops answering and the redirect "can't reach localhost". The
-        // foreground service keeps the process unfrozen until the code arrives (or the 5-minute guard fires).
-        TurnService.start(getApplication())
-        // State validation happens inside the listener; only a matching callback reaches this lambda.
-        codexAuth.startLoopback(expectedState) { code ->
-            viewModelScope.launch(Dispatchers.IO) {
-                runCatching { codexAuth.exchangeCode(code, verifier) }
-                    .onSuccess { _state.update { it.copy(codexConnected = true, notice = "Signed in with ChatGPT - pick a ChatGPT model from the model menu") } }
-                    .onFailure { e ->
-                        codexAuth.stopLoopback()
-                        _state.update { it.copy(error = "Codex sign-in failed: ${e.message}") }
+    fun startCodexSignIn(): String? {
+        val lease = beginLease(authLease, "codex-auth")
+        return runCatching {
+            val url = codexAuth.buildAuthUrl()
+            val verifier = requireNotNull(codexAuth.pendingVerifier)
+            val expectedState = requireNotNull(codexAuth.pendingState)
+            codexAuth.startLoopback(
+                expectedState = expectedState,
+                onError = { message ->
+                    viewModelScope.launch(Dispatchers.IO) {
+                        _state.update { it.copy(error = "Codex sign-in failed: $message") }
+                        endLease(authLease, lease)
                     }
-                TurnService.stop(getApplication())
+                },
+            ) { code ->
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { codexAuth.exchangeCode(code, verifier) }
+                        .onSuccess { _state.update { it.copy(codexConnected = true, notice = "Signed in with ChatGPT - pick a ChatGPT model from the model menu") } }
+                        .onFailure { e ->
+                            codexAuth.stopLoopback()
+                            _state.update { it.copy(error = "Codex sign-in failed: ${e.message}") }
+                        }
+                    endLease(authLease, lease)
+                }
             }
+            viewModelScope.launch(Dispatchers.IO) {
+                kotlinx.coroutines.delay(5 * 60_000L)
+                if (endLease(authLease, lease)) {
+                    codexAuth.stopLoopback()
+                }
+            }
+            url
+        }.getOrElse { e ->
+            codexAuth.stopLoopback()
+            endLease(authLease, lease)
+            _state.update { it.copy(error = "Codex sign-in failed: ${e.message}") }
+            null
         }
-        // Abandonment guard: stop listening (and release the process) after 5 minutes if the flow never completed.
-        viewModelScope.launch(Dispatchers.IO) {
-            kotlinx.coroutines.delay(5 * 60_000L)
-            if (!_state.value.codexConnected) { codexAuth.stopLoopback(); TurnService.stop(getApplication()) }
-        }
-        url
-    }.getOrElse { e ->
-        codexAuth.stopLoopback()
-        TurnService.stop(getApplication())
-        _state.update { it.copy(error = "Codex sign-in failed: ${e.message}") }
-        null
     }
 
     fun signOutCodex() {
+        codexAuth.stopLoopback()
+        endLease(authLease)
         codexAuth.signOut() // CodexAuth owns its key names - don't duplicate them here (matches signOutGitHub)
         _state.update { state ->
             val selected = if (state.selected?.providerId == "codex") {
@@ -795,33 +853,39 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun startGitHubSignIn() {
         if (githubSignInActive) return
         githubSignInActive = true
+        val lease = beginLease(githubAuthLease, "github-auth")
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                val device = githubAuth.startDeviceFlow()
-                _state.update { it.copy(githubAuthCode = device.userCode, githubVerifyUri = device.verificationUri) }
-                val token = githubAuth.pollForToken(device) { githubSignInActive }
-                val login = githubAuth.fetchLogin(token)
-                _state.update { it.copy(githubLogin = login, githubAuthCode = null, githubVerifyUri = null, notice = "Signed in as @$login") }
-            }.onFailure { e ->
-                _state.update {
-                    it.copy(
-                        githubAuthCode = null,
-                        githubVerifyUri = null,
-                        // Local abandonment (cancel button) is silent; a genuine GitHub denial is shown.
-                        error = if (e is GitHubAuth.SignInAbandonedException) null else "GitHub sign-in failed: ${e.message}",
-                    )
+            try {
+                runCatching {
+                    val device = githubAuth.startDeviceFlow()
+                    _state.update { it.copy(githubAuthCode = device.userCode, githubVerifyUri = device.verificationUri) }
+                    val token = githubAuth.pollForToken(device) { githubSignInActive }
+                    val login = githubAuth.fetchLogin(token)
+                    _state.update { it.copy(githubLogin = login, githubAuthCode = null, githubVerifyUri = null, notice = "Signed in as @$login") }
+                }.onFailure { e ->
+                    _state.update {
+                        it.copy(
+                            githubAuthCode = null,
+                            githubVerifyUri = null,
+                            error = if (e is GitHubAuth.SignInAbandonedException) null else "GitHub sign-in failed: ${e.message}",
+                        )
+                    }
                 }
+            } finally {
+                githubSignInActive = false
+                endLease(githubAuthLease, lease)
             }
-            githubSignInActive = false
         }
     }
 
     fun cancelGitHubSignIn() {
         githubSignInActive = false
+        endLease(githubAuthLease)
         _state.update { it.copy(githubAuthCode = null, githubVerifyUri = null) }
     }
 
     fun signOutGitHub() {
+        endLease(githubAuthLease)
         githubAuth.signOut()
         _state.update { it.copy(githubLogin = null) }
     }
@@ -872,6 +936,19 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun resolvePermission(approved: Boolean) { pendingDecision?.complete(approved) }
     fun resolveQuestion(answers: List<UserAnswer>) { pendingQuestionDecision?.complete(answers) }
 
+    private fun connectedProvider(preset: ProviderPreset): LlmProvider? {
+        val key = if (preset.id == "codex") codexAuth.accessToken() else keyStore.get(preset.id)
+        if (key.isNullOrBlank()) return null
+        val resolved = if (preset.id == "codex") {
+            codexAuth.accountId()
+                ?.let { preset.copy(extraHeaders = preset.extraHeaders + ("chatgpt-account-id" to it)) }
+                ?: preset
+        } else {
+            preset
+        }
+        return ProviderFactory.create(resolved, key, http)
+    }
+
     private suspend fun askPermission(tool: String, summary: String): Boolean {
         // Authoritative read from the persisted settings file - the same source the settings
         // toggle displays. The in-memory copy diverged on devices that carried an older value
@@ -914,8 +991,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun runSubagent(description: String, prompt: String, subagentType: String): String {
         val selected = _state.value.selected ?: return "no model selected"
         val preset = providerFor(selected.providerId) ?: return "unknown provider: ${selected.providerId}"
-        val key = keyStore.get(selected.providerId)
-        if (key.isNullOrBlank()) return "no API key configured for ${preset.displayName}"
+        val provider = connectedProvider(preset)
+            ?: return if (preset.id == "codex") "ChatGPT sign-in expired" else "no API key configured for ${preset.displayName}"
         val parentMode = _state.value.agentMode // capture so the child can't escalate PLAN->BUILD mid-subtask
         val childConfig = AgentConfig(
             model = selected.modelId,
@@ -927,7 +1004,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         )
         val childTools = ToolRegistry(tools.all().filterNot { it.name == "task" || it.planOnly })
         val childLoop = AgentLoop(
-            ProviderFactory.create(preset, key, http), childTools, toolContext, childConfig,
+            provider, childTools, toolContext, childConfig,
             modeProvider = { parentMode },
         )
         val out = StringBuilder()
@@ -957,9 +1034,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // Codex authenticates with the ChatGPT OAuth token (not an API key); gate on being signed in here,
         // then resolve a fresh token off the main thread inside the turn (accessToken() may refresh, i.e. hit
         // the network). Every other provider uses its stored API key directly.
-        val isCodex = preset.wireFormat == WireFormat.OPENAI_RESPONSES
-        val key = if (isCodex) keyStore.get("codex.access") else keyStore.get(selected.providerId)
-        if (key.isNullOrBlank()) {
+        val isCodex = preset.id == "codex"
+        if (keyStore.get(if (isCodex) "codex.access" else selected.providerId).isNullOrBlank()) {
             return fail(if (isCodex) "Sign in with ChatGPT in Settings to use Codex." else "Set an API key for ${preset.displayName} in Settings.")
         }
 
@@ -969,18 +1045,22 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 streaming = "",
                 streamingReasoning = "",
                 isRunning = true,
+                retry = null,
                 error = null,
+                interruptedTurn = false,
             )
         }
         // Foreground lease for the whole turn: without it the OS suspends the process shortly
         // after screen-off and the streaming HTTP call dies (device feedback).
-        TurnService.start(getApplication())
+        val lease = beginLease(turnLease, "turn")
 
         val startingHistory = history
         val userParts = buildList {
             if (text.isNotEmpty()) add(MessagePart.Text(text))
             addAll(images)
         }
+        val turnSessionId = sessionId
+        val turnProjectId = currentProjectId
         val gen = ++generation
         // Pin this turn's workspace so a mid-stream project move/delete can't redirect the agent's
         // file/git tools into a different directory (data-integrity guard).
@@ -998,8 +1078,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // interrupted first turn restored as a blank chat. loop.run() re-appends it from startingHistory,
             // so it is not duplicated; TurnComplete later overwrites history with the full turn.
             if (gen == generation) {
-                history = startingHistory + ChatMessage(Role.USER, userParts)
-                persist()
+                val turnHistory = startingHistory + ChatMessage(Role.USER, userParts)
+                history = turnHistory
+                persist(turnHistory, activeTurn = true, targetSessionId = turnSessionId, targetProjectId = turnProjectId)
             }
             val custom = appSettings.load().customInstructions.trim()
             // Drive the reasoning param off the model's own "thinking" config (from the models.dev catalog -
@@ -1012,20 +1093,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 environment = environment(),
                 reasoningEffort = if (reasons) _state.value.effort else ReasoningEffort.DEFAULT,
                 skills = discoveredSkills.map { SkillInfo(it.name, it.description) },
-                sessionId = sessionId,
+                sessionId = turnSessionId,
                 projectInstructions = if (custom.isNotEmpty()) listOf(custom) else emptyList(),
             )
             val limit = limitFor(selected) // context/output token limits drive the gauge + compaction
             try {
-                val provider = if (isCodex) {
-                    val token = codexAuth.accessToken() // refreshes if near expiry (off the main thread)
-                    if (token.isNullOrBlank()) { fail("Sign in with ChatGPT again in Settings."); return@launch }
-                    // The per-user account id can't live in the static preset; attach it for this turn.
-                    val withAccount = codexAuth.accountId()
-                        ?.let { preset.copy(extraHeaders = preset.extraHeaders + ("chatgpt-account-id" to it)) } ?: preset
-                    ProviderFactory.create(withAccount, token, http)
-                } else {
-                    ProviderFactory.create(preset, key, http)
+                val provider = connectedProvider(preset)
+                if (provider == null) {
+                    sessionStore.setActiveTurn(turnSessionId, false)
+                    fail(if (isCodex) "Sign in with ChatGPT again in Settings." else "Set an API key for ${preset.displayName} in Settings.")
+                    return@launch
                 }
                 val loop = AgentLoop(
                     provider, tools, toolContext, config,
@@ -1034,15 +1111,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     turnSettings = { TurnSettings(config.model, if (reasons) _state.value.effort else ReasoningEffort.DEFAULT, limit?.context, limit?.output) },
                     modeProvider = { _state.value.agentMode }, // live so a plan_exit approval flips PLAN→BUILD mid-run
                 )
-                if (startingHistory.isEmpty()) autoBranchIfEnabled(pinnedWorkspace)
-                loop.run(startingHistory, userParts).collect { event -> if (gen == generation) reduce(event) }
+                if (startingHistory.isEmpty()) autoBranchIfEnabled(pinnedWorkspace, turnSessionId)
+                loop.run(startingHistory, userParts).collect { event ->
+                    if (gen == generation) reduce(event, turnSessionId, turnProjectId, selected.providerId)
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (gen == generation) {
+                    _state.update {
+                        it.copy(
+                            error = "The turn stopped unexpectedly: ${humanizeError(error.message ?: error.javaClass.simpleName)} Review workspace changes before retrying.",
+                            interruptedTurn = true,
+                        )
+                    }
+                }
             } finally {
                 if (gen == generation) {
                     turnWorkspace = null
                     commitStreaming()
-                    _state.update { it.copy(isRunning = false, lastCompletedAt = System.currentTimeMillis()) }
-                    TurnService.stop(getApplication())
+                    _state.update { it.copy(isRunning = false, retry = null, lastCompletedAt = System.currentTimeMillis()) }
                 }
+                endLease(turnLease, lease)
             }
         }
     }
@@ -1071,14 +1161,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // Cancel the job FIRST so an awaiting tool unwinds via CancellationException (no extra turn/side-effect);
         // completing the deferreds is then only a fallback to resume anything not yet at a cancellation point.
         job?.cancel()
+        endLease(turnLease)
         // The cancelled job's finally skips the pin clear (generation moved on) - release it here
         // so no stale workspace pin outlives the turn.
         turnWorkspace = null
         pendingDecision?.complete(false)
         pendingQuestionDecision?.complete(emptyList())
         commitStopped()
-        _state.update { it.copy(isRunning = false, pendingPermission = null, pendingQuestion = null, queued = emptyList()) }
-        TurnService.stop(getApplication())
+        sessionStore.setActiveTurn(sessionId, false)
+        _state.update { it.copy(isRunning = false, retry = null, pendingPermission = null, pendingQuestion = null, queued = emptyList(), interruptedTurn = false) }
     }
 
     /**
@@ -1100,14 +1191,27 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun reduce(event: AgentEvent) {
+    private fun reduce(
+        event: AgentEvent,
+        targetSessionId: String,
+        targetProjectId: String?,
+        targetProviderId: String,
+    ) {
         when (event) {
-            is AgentEvent.TextDelta -> _state.update { it.copy(streaming = it.streaming + event.text) }
-            is AgentEvent.ReasoningDelta -> _state.update { it.copy(streamingReasoning = it.streamingReasoning + event.text) }
+            is AgentEvent.TextDelta -> _state.update { it.copy(streaming = it.streaming + event.text, retry = null) }
+            is AgentEvent.ReasoningDelta -> _state.update { it.copy(streamingReasoning = it.streamingReasoning + event.text, retry = null) }
+            is AgentEvent.Retrying -> _state.update {
+                it.copy(retry = RetryState(event.attempt, event.message.take(100)))
+            }
+            is AgentEvent.HistoryCheckpoint -> {
+                history = event.messages
+                persist(event.messages, activeTurn = true, targetSessionId = targetSessionId, targetProjectId = targetProjectId)
+            }
             is AgentEvent.ToolStarted -> {
                 commitStreaming()
                 _state.update {
                     it.copy(
+                        retry = null,
                         lines = it.lines + ChatLine.ToolActivity(
                             event.id, event.name, ToolStatus.RUNNING, summarizeArgs(event.argsJson),
                         ),
@@ -1131,7 +1235,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             // Latest turn's tokens = current context occupancy (input already includes history), not a session sum.
-            is AgentEvent.Usage -> _state.update { it.copy(usageInput = event.input, usageOutput = event.output) }
+            is AgentEvent.Usage -> _state.update { it.copy(usageInput = event.input, usageOutput = event.output, retry = null) }
             is AgentEvent.Compacted -> Unit
             is AgentEvent.UserMessage -> {
                 // The agent just folded a queued message into the turn: flush the live reply, drop the
@@ -1145,29 +1249,48 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 if (event.messages.isNotEmpty()) {
                     history = event.messages
                     commitStreaming()
-                    persist()
+                    persist(event.messages, targetSessionId = targetSessionId, targetProjectId = targetProjectId)
                 } else {
                     commitStreaming()
+                    sessionStore.setActiveTurn(targetSessionId, false)
                 }
-                _state.update { it.copy(error = humanizeError(event.message), isRunning = false) }
+                _state.update { it.copy(error = humanizeError(event, targetProviderId), isRunning = false, retry = null, interruptedTurn = false) }
             }
             is AgentEvent.TurnComplete -> {
                 history = event.messages
                 commitStreaming()
-                persist() // runs on the IO collector thread; survives app restart
+                persist(event.messages, targetSessionId = targetSessionId, targetProjectId = targetProjectId) // runs on the IO collector thread; survives app restart
+                _state.update { it.copy(retry = null, interruptedTurn = false) }
             }
         }
     }
 
     /** Save the current conversation to disk. Title = first user line; no-op for an empty history. */
-    private fun persist() {
-        val snapshot = history
+    private fun persist(
+        snapshot: List<ChatMessage> = history,
+        activeTurn: Boolean = false,
+        targetSessionId: String = sessionId,
+        targetProjectId: String? = currentProjectId,
+    ) {
         if (snapshot.isEmpty()) return
-        val title = snapshot.firstOrNull { it.role == Role.USER }
+        val suggestedTitle = snapshot.firstOrNull { it.role == Role.USER }
             ?.parts?.filterIsInstance<MessagePart.Text>()?.firstOrNull()?.text?.take(40)?.takeIf { it.isNotBlank() }
             ?: "New chat"
         runCatching {
-            sessionStore.save(PersistedSession(sessionId, title, System.currentTimeMillis(), snapshot.map { it.toPersisted() }, currentProjectId))
+            val stored = sessionStore.load(targetSessionId)
+            val title = stored?.title?.takeUnless { it == "New chat" } ?: suggestedTitle
+            sessionStore.save(
+                PersistedSession(
+                    id = targetSessionId,
+                    title = title,
+                    updatedAt = System.currentTimeMillis(),
+                    messages = snapshot.map { it.toPersisted() },
+                    projectId = if (stored == null) targetProjectId else stored.projectId,
+                    pinned = stored?.pinned ?: false,
+                    archived = stored?.archived ?: false,
+                    activeTurn = activeTurn,
+                ),
+            )
             _state.update { it.copy(sessions = sessionStore.list()) }
         }
     }
@@ -1211,7 +1334,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (lines === s.lines) s else s.copy(lines = lines, streaming = "", streamingReasoning = "")
     }
 
-    private fun fail(message: String) = _state.update { it.copy(error = humanizeError(message)) }
+    private fun fail(message: String) = _state.update { it.copy(error = humanizeError(message), interruptedTurn = false) }
 
     /**
      * Raw transport errors read as developer noise on a phone ("Unable to resolve host...").
@@ -1235,6 +1358,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             "overloaded" in lower || "529" in lower ->
                 "The provider is overloaded right now - try again shortly."
             else -> raw
+        }
+    }
+
+    private fun humanizeError(error: AgentEvent.Error, providerId: String): String {
+        val retry = error.retryAfterMillis?.let { " Try again in ${formatDuration(it)}." }.orEmpty()
+        return when (error.kind) {
+            FailureKind.AUTH -> if (providerId == "codex") {
+                "Your ChatGPT sign-in expired. Sign in again in Settings > Providers."
+            } else {
+                "The provider rejected your API key. Check it in Settings > Providers."
+            }
+            FailureKind.RATE_LIMIT -> "The provider is rate limiting requests.$retry"
+            FailureKind.QUOTA -> if (providerId == "opencode-go") {
+                "OpenCode Go usage limit reached.$retry You can enable Zen balance fallback in the OpenCode console."
+            } else {
+                "The provider usage limit has been reached.$retry"
+            }
+            FailureKind.INVALID_REQUEST -> error.message
+            FailureKind.SERVER -> "The provider is unavailable right now.$retry"
+            FailureKind.NETWORK -> humanizeError(error.message)
+            FailureKind.PARSE -> "The provider returned an unreadable response. Try again or switch models."
+            FailureKind.UNKNOWN -> humanizeError(error.message)
         }
     }
 
@@ -1284,7 +1429,8 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // and the Codex loopback listener would otherwise hold port 1455 until its 5-min timeout.
         githubSignInActive = false
         codexAuth.stopLoopback()
-        TurnService.stop(getApplication())
+        endLease(authLease)
+        endLease(githubAuthLease)
         super.onCleared()
     }
 }
@@ -1297,6 +1443,50 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 internal fun redoCutIndex(history: List<ChatMessage>): Int =
     history.indexOfLast { m -> m.role == Role.USER && m.parts.any { it is MessagePart.Text } }
 
+internal fun repairInterruptedHistory(history: List<ChatMessage>): List<ChatMessage> {
+    val unresolved = linkedMapOf<String, MessagePart.ToolCall>()
+    history.forEach { message ->
+        message.parts.forEach { part ->
+            when (part) {
+                is MessagePart.ToolCall -> unresolved[part.id] = part
+                is MessagePart.ToolResult -> unresolved.remove(part.callId)
+                else -> Unit
+            }
+        }
+    }
+    if (unresolved.isEmpty()) return history
+    return history + ChatMessage(
+        Role.USER,
+        unresolved.values.map {
+            MessagePart.ToolResult(
+                callId = it.id,
+                content = "Interrupted before PhoneCode recorded the result. Review workspace changes before retrying.",
+                isError = true,
+            )
+        },
+    )
+}
+
+private const val TURN_INTERRUPTED_MESSAGE =
+    "The previous turn stopped unexpectedly. Review any file changes before retrying."
+
+internal fun formatDuration(millis: Long): String {
+    val seconds = (millis.coerceAtLeast(0) + 999) / 1_000
+    val hours = seconds / 3_600
+    val minutes = seconds % 3_600 / 60
+    return when {
+        hours > 0 -> "${hours}h ${minutes}m"
+        minutes > 0 -> "${minutes}m"
+        else -> "${seconds}s"
+    }
+}
+
+internal fun catalogProviderId(id: String): String = when (id) {
+    "opencode-zen" -> "opencode"
+    "codex" -> "openai"
+    else -> id
+}
+
 fun builtInModels(): List<ModelOption> = listOf(
     ModelOption("anthropic", "claude-opus-4-8", "Claude Opus 4.8"),
     ModelOption("anthropic", "claude-sonnet-4-6", "Claude Sonnet 4.6"),
@@ -1304,8 +1494,8 @@ fun builtInModels(): List<ModelOption> = listOf(
     ModelOption("openai", "gpt-5.5", "GPT-5.5"),
     ModelOption("openai", "o3", "o3"),
     ModelOption("openrouter", "anthropic/claude-opus-4-8", "OpenRouter · Claude Opus 4.8"),
-    ModelOption("opencode-zen", "opencode/nemotron-3-ultra-free", "Zen · Nemotron 3 Ultra (Free)"),
-    ModelOption("opencode-go", "opencode/go-fast", "Go · Fast"),
+    ModelOption("opencode-zen", "nemotron-3-ultra-free", "Zen · Nemotron 3 Ultra (Free)"),
+    ModelOption("opencode-go", "mimo-v2.5", "Go · MiMo V2.5"),
     ModelOption("google", "gemini-2.5-pro", "Gemini 2.5 Pro"),
     ModelOption("google", "gemini-2.0-flash", "Gemini 2.0 Flash"),
     ModelOption("xai", "grok-2-latest", "Grok 2"),
@@ -1327,6 +1517,7 @@ private const val BUNDLED_CATALOG = """
   "openai":{"id":"openai","name":"OpenAI","models":{"gpt-5.5":{"id":"gpt-5.5","name":"GPT-5.5"},"o3":{"id":"o3","name":"o3"}}},
   "anthropic":{"id":"anthropic","name":"Anthropic","models":{"claude-opus-4-8":{"id":"claude-opus-4-8","name":"Claude Opus 4.8"},"claude-sonnet-4-6":{"id":"claude-sonnet-4-6","name":"Claude Sonnet 4.6"},"claude-haiku-4-5":{"id":"claude-haiku-4-5","name":"Claude Haiku 4.5"}}},
   "openrouter":{"id":"openrouter","name":"OpenRouter","models":{"anthropic/claude-opus-4-8":{"id":"anthropic/claude-opus-4-8","name":"Claude Opus 4.8"}}},
-  "opencode":{"id":"opencode","name":"OpenCode Zen","models":{"opencode/nemotron-3-ultra-free":{"id":"opencode/nemotron-3-ultra-free","name":"Nemotron 3 Ultra (Free)"}}}
+  "opencode":{"id":"opencode","name":"OpenCode Zen","models":{"nemotron-3-ultra-free":{"id":"nemotron-3-ultra-free","name":"Nemotron 3 Ultra Free"}}},
+  "opencode-go":{"id":"opencode-go","name":"OpenCode Go","api":"https://opencode.ai/zen/go/v1","models":{"mimo-v2.5":{"id":"mimo-v2.5","name":"MiMo V2.5","reasoning":true,"tool_call":true,"attachment":true,"limit":{"context":1000000,"output":128000}}}}
 }
 """

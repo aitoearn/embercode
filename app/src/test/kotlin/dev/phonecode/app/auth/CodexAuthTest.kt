@@ -2,15 +2,19 @@ package dev.phonecode.app.auth
 
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.net.Socket
 import java.util.Base64
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 
 class CodexAuthTest {
 
@@ -74,10 +78,66 @@ class CodexAuthTest {
         assertEquals("acct-789", auth.extractAccountId(dotted))
     }
 
+    @Test fun extractsOrganizationAccountIdFallback() {
+        val token = jwt("""{"organizations":[{"id":"acct-org"}]}""")
+        assertEquals("acct-org", auth.extractAccountId(token))
+    }
+
     @Test fun extractAccountIdReturnsNullWhenAbsentOrMalformed() {
         assertNull(auth.extractAccountId(jwt("""{"sub":"user-1"}""")))
         assertNull(auth.extractAccountId("not-a-jwt"))
         assertNull(auth.extractAccountId("a.!!!not-base64url!!!.c"))
+    }
+
+    @Test fun accountIdBackfillsFromStoredAccessToken() {
+        val values = ConcurrentHashMap<String, String>()
+        values["codex.access"] = jwt("""{"organizations":[{"id":"acct-legacy"}]}""")
+        val stored = CodexAuth(OkHttpClient(), values::put, values::get)
+        assertEquals("acct-legacy", stored.accountId())
+        assertEquals("acct-legacy", values["codex.account"])
+    }
+
+    @Test fun concurrentRefreshUsesRotatingTokenOnce() {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse().setBody(
+                """{"access_token":"new-access","refresh_token":"new-refresh","expires_in":3600}""",
+            ),
+        )
+        server.start()
+        val values = ConcurrentHashMap<String, String>()
+        values["codex.access"] = "old-access"
+        values["codex.refresh"] = "old-refresh"
+        values["codex.expires"] = (System.currentTimeMillis() - 1).toString()
+        val stored = CodexAuth(OkHttpClient(), values::put, values::get, server.url("/oauth/token").toString())
+        val start = CountDownLatch(1)
+        val done = CountDownLatch(2)
+        val tokens = java.util.Collections.synchronizedList(mutableListOf<String?>())
+        repeat(2) {
+            thread {
+                start.await()
+                tokens += stored.accessToken()
+                done.countDown()
+            }
+        }
+        start.countDown()
+        assertTrue(done.await(3, TimeUnit.SECONDS))
+        assertEquals(listOf("new-access", "new-access"), tokens.sortedBy { it })
+        assertEquals(1, server.requestCount)
+        server.shutdown()
+    }
+
+    @Test fun refreshFailureKeepsAccessTokenUntilActualExpiry() {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setResponseCode(503))
+        server.start()
+        val values = ConcurrentHashMap<String, String>()
+        values["codex.access"] = "still-valid"
+        values["codex.refresh"] = "refresh"
+        values["codex.expires"] = (System.currentTimeMillis() + 30_000).toString()
+        val stored = CodexAuth(OkHttpClient(), values::put, values::get, server.url("/oauth/token").toString())
+        assertEquals("still-valid", stored.accessToken())
+        server.shutdown()
     }
 
     /** Hand-built unsigned JWT: base64url(header).base64url(payload).fake-signature. */
@@ -117,9 +177,24 @@ class CodexAuthTest {
     @Test fun loopbackBindsLoopbackInterfaceOnly() {
         auth.startLoopback("s") { }
         try {
-            // Connecting via 127.0.0.1 works; the socket must not be reachable on other interfaces,
-            // which we can at least assert by checking the bound address is loopback.
             Socket("127.0.0.1", 1455).use { assertTrue(it.isConnected) }
+            Socket("::1", 1455).use { assertTrue(it.isConnected) }
+        } finally {
+            auth.stopLoopback()
+        }
+    }
+
+    @Test fun loopbackSurfacesAuthorizationErrors() {
+        val latch = CountDownLatch(1)
+        val received = AtomicReference<String?>(null)
+        auth.startLoopback("expected", onError = {
+            received.set(it)
+            latch.countDown()
+        }) { }
+        try {
+            hitLoopback("error=access_denied&error_description=Cancelled&state=expected")
+            assertTrue(latch.await(3, TimeUnit.SECONDS))
+            assertEquals("Cancelled", received.get())
         } finally {
             auth.stopLoopback()
         }

@@ -102,7 +102,7 @@ object TransferBundle {
             staged.forEach { (name, stage) ->
                 val target = File(filesDir, name)
                 target.parentFile?.mkdirs()
-                stage.copyTo(target, overwrite = true)
+                target.writeBytesAtomically(stage.readBytes())
             }
             return staged.size
         } finally {

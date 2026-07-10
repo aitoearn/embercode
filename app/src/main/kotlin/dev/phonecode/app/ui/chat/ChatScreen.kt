@@ -108,6 +108,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -515,7 +516,15 @@ fun ChatScreen(
                 // Union of ime+navbar: above the keyboard when typing, above the navbar otherwise.
                 .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
         ) {
-            state.error?.let { ErrorBanner(it) { vm.clearError() } }
+            state.error?.let {
+                ErrorBanner(
+                    text = it,
+                    actionLabel = if (state.interruptedTurn) "Retry" else null,
+                    onAction = vm::redo,
+                    onDismiss = vm::clearError,
+                )
+            }
+            state.retry?.let { NoticeBanner("Retrying connection · attempt ${it.attempt} · ${it.message}") }
             state.notice?.let {
                 NoticeBanner(it)
                 LaunchedEffect(it) { kotlinx.coroutines.delay(3500); vm.clearNotice() }
@@ -1110,7 +1119,12 @@ private fun NoticeBanner(text: String) {
 }
 
 @Composable
-private fun ErrorBanner(text: String, onDismiss: () -> Unit) {
+private fun ErrorBanner(
+    text: String,
+    actionLabel: String? = null,
+    onAction: () -> Unit = {},
+    onDismiss: () -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp).clip(MaterialTheme.shapes.small)
@@ -1118,6 +1132,11 @@ private fun ErrorBanner(text: String, onDismiss: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(text, style = MaterialTheme.typography.labelMedium, color = colors.onErrorContainer, modifier = Modifier.weight(1f))
+        actionLabel?.let {
+            TextButton(onClick = onAction, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)) {
+                Text(it, color = colors.onErrorContainer)
+            }
+        }
         Icon(Icons.Filled.Close, "Dismiss", tint = colors.onErrorContainer, modifier = Modifier.size(16.dp).clickable(onClick = onDismiss))
     }
 }

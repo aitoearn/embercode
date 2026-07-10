@@ -1,6 +1,7 @@
 package dev.phonecode.provider.http
 
 import dev.phonecode.provider.domain.StreamEvent
+import dev.phonecode.provider.domain.FailureKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -11,6 +12,11 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.job
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.IOException
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 /** A stateful, per-stream mapper from raw SSE events to normalized [StreamEvent]s. */
 internal interface SseStreamMapper {
@@ -19,6 +25,53 @@ internal interface SseStreamMapper {
 }
 
 private const val MAX_ERROR_BODY = 2048L
+
+private fun retryableStatus(code: Int): Boolean = code in setOf(408, 409, 425, 429) || code in 500..599
+
+private fun retryAfterMillis(value: String?, now: Long = System.currentTimeMillis()): Long? {
+    if (value.isNullOrBlank()) return null
+    value.toDoubleOrNull()?.let { return (it * 1_000).toLong().coerceAtLeast(0) }
+    return runCatching {
+        (ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli() - now)
+            .coerceAtLeast(0)
+    }.getOrNull()
+}
+
+private fun resetAfterMillis(value: String?, now: Long = System.currentTimeMillis()): Long? {
+    if (value.isNullOrBlank()) return null
+    val number = value.toDoubleOrNull()
+    if (number != null) {
+        return when {
+            number > 10_000_000_000L -> (number.toLong() - now).coerceAtLeast(0)
+            number > 1_000_000_000L -> ((number * 1_000).toLong() - now).coerceAtLeast(0)
+            else -> (number * 1_000).toLong().coerceAtLeast(0)
+        }
+    }
+    return retryAfterMillis(value, now)
+}
+
+internal fun classifyFailure(statusCode: Int?, code: String?, message: String): FailureKind {
+    val value = listOfNotNull(code, message).joinToString(" ").lowercase()
+    return when {
+        "quota" in value || "usage limit" in value || "usage exceeded" in value ||
+            "insufficient_quota" in value || "credit balance" in value -> FailureKind.QUOTA
+        statusCode == 429 || "rate limit" in value || "too many requests" in value -> FailureKind.RATE_LIMIT
+        statusCode == 401 || "unauthorized" in value || "invalid api key" in value ||
+            "authentication" in value || "api_key" in value -> FailureKind.AUTH
+        statusCode != null && statusCode in 400..499 -> FailureKind.INVALID_REQUEST
+        statusCode != null && statusCode >= 500 || "overloaded" in value -> FailureKind.SERVER
+        "parse error" in value -> FailureKind.PARSE
+        else -> FailureKind.UNKNOWN
+    }
+}
+
+private data class HttpErrorDetails(val message: String, val code: String?)
+
+private fun httpErrorDetails(code: Int, contentType: String?, body: String): HttpErrorDetails {
+    val errorCode = Regex("\"code\"\\s*:\\s*\"((?:[^\"\\\\]|\\\\.)*)\"").find(body)
+        ?.groupValues?.get(1)?.let(::unescapeJsonString)
+    return HttpErrorDetails(httpErrorMessage(code, contentType, body), errorCode)
+}
 
 /**
  * Turns an HTTP error response into a short, legible message. API errors are JSON
@@ -90,12 +143,29 @@ internal fun streamSse(
             if (!response.isSuccessful) {
                 // peekBody bounds the read so a hostile error body can never be fully buffered.
                 val body = response.peekBody(MAX_ERROR_BODY).string()
-                emit(StreamEvent.Failed(httpErrorMessage(response.code, response.header("Content-Type"), body)))
+                val retryAfter = response.header("retry-after-ms")?.toLongOrNull()
+                    ?: retryAfterMillis(response.header("retry-after"))
+                    ?: resetAfterMillis(response.header("x-ratelimit-reset-requests"))
+                    ?: resetAfterMillis(response.header("x-ratelimit-reset"))
+                    ?: resetAfterMillis(response.header("ratelimit-reset"))
+                val details = httpErrorDetails(response.code, response.header("Content-Type"), body)
+                val kind = classifyFailure(response.code, details.code, details.message)
+                emit(
+                    StreamEvent.Failed(
+                        message = details.message,
+                        retryable = retryableStatus(response.code) &&
+                            kind !in setOf(FailureKind.AUTH, FailureKind.QUOTA, FailureKind.INVALID_REQUEST),
+                        retryAfterMillis = retryAfter,
+                        kind = kind,
+                        statusCode = response.code,
+                        code = details.code,
+                    ),
+                )
                 return@use
             }
             val source = response.body?.source()
             if (source == null) {
-                emit(StreamEvent.Failed("empty response body"))
+                emit(StreamEvent.Failed("empty response body", kind = FailureKind.SERVER))
                 return@use
             }
             while (true) {
@@ -111,5 +181,6 @@ internal fun streamSse(
 }.flowOn(Dispatchers.IO).catch { e ->
     // A cancelled call surfaces as an IOException; on stop, propagate cancellation instead of a spurious Failed.
     if (e is CancellationException) throw e
-    emit(StreamEvent.Failed(e.message ?: "stream error"))
+    val retryable = e is IOException && e !is SSLHandshakeException && e !is SSLPeerUnverifiedException
+    emit(StreamEvent.Failed(e.message ?: "stream error", retryable, kind = FailureKind.NETWORK))
 }

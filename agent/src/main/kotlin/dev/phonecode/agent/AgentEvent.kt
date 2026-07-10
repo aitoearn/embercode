@@ -1,6 +1,7 @@
 package dev.phonecode.agent
 
 import dev.phonecode.provider.domain.ChatMessage
+import dev.phonecode.provider.domain.FailureKind
 
 /** High-level, UI-facing events produced by the agent loop. */
 sealed interface AgentEvent {
@@ -9,6 +10,8 @@ sealed interface AgentEvent {
     data class ToolStarted(val id: String, val name: String, val argsJson: String) : AgentEvent
     data class ToolFinished(val id: String, val output: String, val isError: Boolean) : AgentEvent
     data class Usage(val input: Long, val output: Long) : AgentEvent
+    data class Retrying(val attempt: Int, val message: String) : AgentEvent
+    data class HistoryCheckpoint(val messages: List<ChatMessage>) : AgentEvent
 
     /** Older messages were summarized to stay within the context window. */
     data class Compacted(val messageCount: Int) : AgentEvent
@@ -22,7 +25,14 @@ sealed interface AgentEvent {
      * plus the user's message) when it should be preserved, so a dropped connection does not lose context;
      * empty means leave the existing history untouched.
      */
-    data class Error(val message: String, val messages: List<ChatMessage> = emptyList()) : AgentEvent
+    data class Error(
+        val message: String,
+        val messages: List<ChatMessage> = emptyList(),
+        val kind: FailureKind = FailureKind.UNKNOWN,
+        val statusCode: Int? = null,
+        val retryAfterMillis: Long? = null,
+        val code: String? = null,
+    ) : AgentEvent
 
     /**
      * Terminal event: the assistant turn finished with no further tool calls.

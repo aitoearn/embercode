@@ -36,7 +36,7 @@ class CustomProviderRepository(private val configDir: File) {
 
     fun save(config: ProvidersConfig) {
         configDir.mkdirs()
-        file.writeText(json.encodeToString(ProvidersConfig.serializer(), config))
+        file.writeTextAtomically(json.encodeToString(ProvidersConfig.serializer(), config))
     }
 
     val path: String get() = file.absolutePath

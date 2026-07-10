@@ -21,7 +21,7 @@ class McpSkillRepository(private val configDir: File) {
 
     fun saveMcpConfig(config: McpConfig) {
         configDir.mkdirs()
-        mcpFile.writeText(config.serialize())
+        mcpFile.writeTextAtomically(config.serialize())
     }
 
     /**
@@ -36,12 +36,12 @@ class McpSkillRepository(private val configDir: File) {
                 val target = File(configDir, "skills/$name/SKILL.md")
                 if (!target.exists()) {
                     target.parentFile?.mkdirs()
-                    assets.open("skills/$name/SKILL.md").use { input -> target.outputStream().use { input.copyTo(it) } }
+                    assets.open("skills/$name/SKILL.md").use { input -> target.writeBytesAtomically(input.readBytes()) }
                 }
             }
         }
         configDir.mkdirs()
-        runCatching { marker.writeText("1") }
+        runCatching { marker.writeTextAtomically("1") }
     }
 
     /** Discover every `SKILL.md` under `skills/` and `.claude/skills/`, de-duplicated by name. */

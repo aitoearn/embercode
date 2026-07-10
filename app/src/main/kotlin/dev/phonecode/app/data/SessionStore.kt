@@ -37,6 +37,7 @@ data class PersistedSession(
     val projectId: String? = null,
     val pinned: Boolean = false,
     val archived: Boolean = false,
+    val activeTurn: Boolean = false,
 )
 
 /** Lightweight catalog row for the sessions list (one-line preview, no full message bodies). */
@@ -64,7 +65,9 @@ private fun stripMarkdown(s: String): String =
 
 /** One-line preview for the drawer: the last message's first text part, stripped of markdown and trimmed. */
 private fun previewOf(s: PersistedSession): String =
-    s.messages.lastOrNull()?.parts?.firstNotNullOfOrNull { (it as? PersistedPart.Text)?.text }
+    s.messages.asReversed().firstNotNullOfOrNull { message ->
+        message.parts.firstNotNullOfOrNull { (it as? PersistedPart.Text)?.text }
+    }
         ?.let { stripMarkdown(it.take(500)).take(80) } ?: "" // take() first so the regex never runs over a multi-MB body
 
 fun ChatMessage.toPersisted(): PersistedMessage =
@@ -124,7 +127,7 @@ class SessionStore(private val dir: File) {
 
     fun save(session: PersistedSession): Unit = locked {
         dir.mkdirs()
-        fileFor(session.id).writeText(json.encodeToString(PersistedSession.serializer(), session))
+        fileFor(session.id).writeTextAtomically(json.encodeToString(PersistedSession.serializer(), session))
         cache()[session.id] = metaOf(session)
     }
 
@@ -171,6 +174,10 @@ class SessionStore(private val dir: File) {
     /** Archive/unarchive a stored session (archived chats drop out of the main list). */
     fun setArchived(id: String, archived: Boolean): Unit = locked {
         load(id)?.let { save(it.copy(archived = archived)) }
+    }
+
+    fun setActiveTurn(id: String, active: Boolean): Unit = locked {
+        load(id)?.let { save(it.copy(activeTurn = active)) }
     }
 
     private companion object {

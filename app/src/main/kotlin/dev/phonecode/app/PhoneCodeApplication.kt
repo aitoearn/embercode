@@ -1,12 +1,20 @@
 package dev.phonecode.app
 
 import android.app.Application
+import dev.phonecode.app.agent.ChatViewModel
+import dev.phonecode.app.agent.TurnService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import java.io.File
 
 class PhoneCodeApplication : Application() {
+    val foregroundLeases = ForegroundLeaseManager(
+        start = { TurnService.start(this) },
+        stop = { TurnService.stop(this) },
+    )
+    val chatViewModel by lazy { ChatViewModel(this) }
+
     /**
      * Scope for in-flight agent TURNS. Deliberately application-level: a turn launched in
      * viewModelScope died with the activity (closing the app or locking the phone killed the

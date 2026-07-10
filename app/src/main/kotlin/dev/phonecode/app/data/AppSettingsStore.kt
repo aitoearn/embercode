@@ -45,7 +45,7 @@ class AppSettingsStore(private val file: File) {
 
     private fun saveLocked(settings: AppSettings) {
         file.parentFile?.mkdirs()
-        file.writeText(json.encodeToString(AppSettings.serializer(), settings))
+        file.writeTextAtomically(json.encodeToString(AppSettings.serializer(), settings))
     }
 
     private companion object {

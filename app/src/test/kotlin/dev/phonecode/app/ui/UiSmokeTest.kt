@@ -11,6 +11,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.phonecode.app.MainActivity
+import dev.phonecode.app.PhoneCodeApplication
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -85,6 +86,21 @@ class UiSmokeTest {
         compose.onNodeWithContentDescription("Menu").performClick()
         compose.onNodeWithContentDescription("Settings").performClick()
         compose.onNodeWithText("Providers").assertIsDisplayed()
+    }
+
+    @Test
+    fun chatRuntimeSurvivesActivityRecreation() {
+        dismissOnboardingIfPresent()
+        val app = androidx.test.core.app.ApplicationProvider
+            .getApplicationContext<PhoneCodeApplication>()
+        app.chatViewModel.surfaceError("Runtime retained")
+        compose.onNodeWithText("Runtime retained").assertIsDisplayed()
+
+        compose.activityRule.scenario.recreate()
+        compose.waitForIdle()
+
+        compose.onNodeWithText("Runtime retained").assertIsDisplayed()
+        app.chatViewModel.clearError()
     }
 
     @Test

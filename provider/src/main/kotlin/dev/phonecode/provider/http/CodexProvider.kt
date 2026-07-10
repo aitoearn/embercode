@@ -1,6 +1,7 @@
 package dev.phonecode.provider.http
 
 import dev.phonecode.provider.domain.ChatRequest
+import dev.phonecode.provider.domain.FailureKind
 import dev.phonecode.provider.domain.LlmProvider
 import dev.phonecode.provider.domain.StopReason
 import dev.phonecode.provider.domain.StreamEvent
@@ -58,7 +59,7 @@ internal class ResponsesStreamMapper : SseStreamMapper {
             streamJson.parseToJsonElement(data).jsonObject
         } catch (e: Exception) {
             terminated = true
-            return listOf(StreamEvent.Failed("codex parse error: ${e.message}"))
+            return listOf(StreamEvent.Failed("codex parse error: ${e.message}", kind = FailureKind.PARSE))
         }
         // The event type is on the SSE `event:` line and mirrored in the data's `type` field; prefer data.
         val type = obj.str("type") ?: raw.event ?: return emptyList()
@@ -94,11 +95,17 @@ internal class ResponsesStreamMapper : SseStreamMapper {
             "response.completed" -> obj.obj("response")?.obj("usage")?.let { out.add(parseUsage(it)) }
             "response.failed" -> {
                 terminated = true
-                out.add(StreamEvent.Failed(obj.obj("response")?.obj("error")?.str("message") ?: "codex request failed"))
+                val error = obj.obj("response")?.obj("error")
+                val message = error?.str("message") ?: "codex request failed"
+                val code = error?.str("code") ?: error?.str("type")
+                out.add(StreamEvent.Failed(message, kind = classifyFailure(null, code, message), code = code))
             }
             "error" -> {
                 terminated = true
-                out.add(StreamEvent.Failed(obj.str("message") ?: obj.obj("error")?.str("message") ?: "codex error"))
+                val error = obj.obj("error")
+                val message = obj.str("message") ?: error?.str("message") ?: "codex error"
+                val code = obj.str("code") ?: error?.str("code") ?: error?.str("type")
+                out.add(StreamEvent.Failed(message, kind = classifyFailure(null, code, message), code = code))
             }
         }
         return out

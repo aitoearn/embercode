@@ -127,6 +127,17 @@ class AgentLoopTest {
         assertTrue(secondMsgs.any { m -> m.parts.any { it is MessagePart.ToolResult } })
     }
 
+    @Test fun checkpointsHistoryBeforeAndAfterToolExecution() = runTest {
+        val provider = ScriptedProvider(listOf(toolTurn(Triple(0, "c1", "echo")), finalText))
+        val events = loop(provider, listOf(RecordingTool())).run(emptyList(), "do it").toList()
+        val checkpoints = events.filterIsInstance<AgentEvent.HistoryCheckpoint>()
+        assertEquals(2, checkpoints.size)
+        assertTrue(checkpoints[0].messages.flatMap { it.parts }.any { it is MessagePart.ToolCall })
+        assertFalse(checkpoints[0].messages.flatMap { it.parts }.any { it is MessagePart.ToolResult })
+        assertTrue(checkpoints[1].messages.flatMap { it.parts }.any { it is MessagePart.ToolResult })
+        assertTrue(events.indexOf(checkpoints[0]) < events.indexOfFirst { it is AgentEvent.ToolStarted })
+    }
+
     @Test fun unknownToolReportsError() = runTest {
         val provider = ScriptedProvider(listOf(toolTurn(Triple(0, "c", "nope")), finalText))
         val events = loop(provider).run(emptyList(), "x").toList()
@@ -202,6 +213,34 @@ class AgentLoopTest {
         // A failed turn preserves the conversation (here just the user's message) so context survives a drop.
         assertEquals(listOf(ChatMessage(Role.USER, listOf(MessagePart.Text("x")))), error.messages)
         assertFalse(events.any { it is AgentEvent.TurnComplete })
+    }
+
+    @Test fun retryableFailureBeforeOutputRetries() = runTest {
+        val provider = ScriptedProvider(
+            listOf(
+                listOf(StreamEvent.Failed("temporarily offline", retryable = true)),
+                finalText,
+            ),
+        )
+
+        val events = loop(provider).run(emptyList(), "x").toList()
+
+        assertEquals(2, provider.requests.size)
+        assertTrue(events.any { it is AgentEvent.Retrying && it.attempt == 1 })
+        assertTrue(events.last() is AgentEvent.TurnComplete)
+    }
+
+    @Test fun retryableFailureAfterOutputDoesNotReplay() = runTest {
+        val provider = ScriptedProvider(
+            listOf(listOf(StreamEvent.TextDelta("partial"), StreamEvent.Failed("disconnected", retryable = true))),
+        )
+
+        val events = loop(provider).run(emptyList(), "x").toList()
+
+        assertEquals(1, provider.requests.size)
+        assertFalse(events.any { it is AgentEvent.Retrying })
+        val error = events.last() as AgentEvent.Error
+        assertEquals("partial", error.messages.last().parts.filterIsInstance<MessagePart.Text>().single().text)
     }
 
     @Test fun toolCancellationPropagatesAndIsNotSwallowed() = runTest {
@@ -318,7 +357,11 @@ class AgentLoopTest {
         assertEquals(3, provider.calls) // two batches run, doom detected on the third
         assertEquals(2, tool.executions)
         assertTrue(ctx.permissionRequests.contains("doom_loop"))
-        assertTrue((events.last() as AgentEvent.Error).message.contains("repeated"))
+        val error = events.last() as AgentEvent.Error
+        assertTrue(error.message.contains("repeated"))
+        val calls = error.messages.flatMap { it.parts }.filterIsInstance<MessagePart.ToolCall>()
+        val results = error.messages.flatMap { it.parts }.filterIsInstance<MessagePart.ToolResult>()
+        assertEquals(calls.map { it.id }, results.map { it.callId })
     }
 
     @Test fun steeringResetsTheDoomLoopGuard() = runTest {

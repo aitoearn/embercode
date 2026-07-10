@@ -5,6 +5,7 @@ import dev.phonecode.provider.domain.MessagePart
 import dev.phonecode.provider.domain.Role
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -44,6 +45,7 @@ class SessionStoreTest {
         store.save(session)
         val restored = store.load("session-1")!!.messages.map { it.toDomain() }
         assertEquals(sample, restored) // data-class equality proves every field survived the round trip
+        assertEquals("hi there", store.list().single().preview)
     }
 
     @Test fun listReturnsMetaNewestFirst() {
@@ -82,5 +84,23 @@ class SessionStoreTest {
         File(dir, "broken.json").writeText("{ not valid json")
         // A corrupt file must not crash listing; it is simply skipped.
         assertTrue(store.list().isEmpty())
+    }
+
+    @Test fun persistsActiveTurnAndDefaultsLegacySessionsToInactive() {
+        store.save(PersistedSession("active", "Active", 1L, emptyList(), activeTurn = true))
+        assertTrue(store.load("active")!!.activeTurn)
+
+        File(dir, "legacy.json").writeText("""{"id":"legacy","title":"Legacy","updatedAt":1,"messages":[]}""")
+        assertFalse(store.load("legacy")!!.activeTurn)
+    }
+
+    @Test fun changingActiveTurnPreservesSessionMetadata() {
+        store.save(PersistedSession("x", "X", 1L, emptyList(), "project", pinned = true, archived = true))
+        store.setActiveTurn("x", true)
+        val session = store.load("x")!!
+        assertEquals("project", session.projectId)
+        assertTrue(session.pinned)
+        assertTrue(session.archived)
+        assertTrue(session.activeTurn)
     }
 }

@@ -2,6 +2,7 @@ package dev.phonecode.provider.http
 
 import dev.phonecode.provider.domain.StopReason
 import dev.phonecode.provider.domain.StreamEvent
+import dev.phonecode.provider.domain.FailureKind
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
@@ -28,7 +29,7 @@ internal class AnthropicStreamMapper : SseStreamMapper {
                 streamJson.parseToJsonElement(it).jsonObject
             } catch (e: Exception) {
                 ended = true
-                return listOf(StreamEvent.Failed("anthropic parse error: ${e.message}"))
+                return listOf(StreamEvent.Failed("anthropic parse error: ${e.message}", kind = FailureKind.PARSE))
             }
         }
         return when (type) {
@@ -39,7 +40,10 @@ internal class AnthropicStreamMapper : SseStreamMapper {
             "message_delta" -> handleMessageDelta(obj)
             "error" -> {
                 ended = true
-                listOf(StreamEvent.Failed(obj?.obj("error")?.str("message") ?: "anthropic error"))
+                val error = obj?.obj("error")
+                val message = error?.str("message") ?: "anthropic error"
+                val code = error?.str("type")
+                listOf(StreamEvent.Failed(message, kind = classifyFailure(null, code, message), code = code))
             }
             else -> emptyList() // ping, message_stop
         }

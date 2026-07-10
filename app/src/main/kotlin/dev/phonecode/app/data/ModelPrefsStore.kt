@@ -24,7 +24,7 @@ class ModelPrefsStore(private val file: File) {
 
     private fun save(p: Prefs) {
         file.parentFile?.mkdirs()
-        file.writeText(json.encodeToString(Prefs.serializer(), p))
+        file.writeTextAtomically(json.encodeToString(Prefs.serializer(), p))
     }
 
     private inline fun <T> locked(block: () -> T): T = synchronized(LOCK, block)

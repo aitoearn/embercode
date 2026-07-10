@@ -2,6 +2,7 @@ package dev.phonecode.provider.http
 
 import dev.phonecode.provider.domain.StopReason
 import dev.phonecode.provider.domain.StreamEvent
+import dev.phonecode.provider.domain.FailureKind
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 
@@ -28,12 +29,14 @@ internal class OpenAiStreamMapper : SseStreamMapper {
             streamJson.parseToJsonElement(data).jsonObject
         } catch (e: Exception) {
             terminated = true
-            return listOf(StreamEvent.Failed("openai parse error: ${e.message}"))
+            return listOf(StreamEvent.Failed("openai parse error: ${e.message}", kind = FailureKind.PARSE))
         }
 
         obj.obj("error")?.let { err ->
             terminated = true
-            return listOf(StreamEvent.Failed(err.str("message") ?: "openai error"))
+            val message = err.str("message") ?: "openai error"
+            val code = err.str("code") ?: err.str("type")
+            return listOf(StreamEvent.Failed(message, kind = classifyFailure(null, code, message), code = code))
         }
 
         val out = mutableListOf<StreamEvent>()

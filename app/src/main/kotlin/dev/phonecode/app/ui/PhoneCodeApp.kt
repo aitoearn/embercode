@@ -78,6 +78,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -92,6 +93,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.runtime.collectAsState
 import dev.phonecode.app.agent.ChatViewModel
 import dev.phonecode.app.R
+import dev.phonecode.app.PhoneCodeApplication
 import dev.phonecode.app.data.Project
 import dev.phonecode.app.data.SessionMeta
 import dev.phonecode.app.data.ThemeMode
@@ -129,7 +131,8 @@ private tailrec fun android.content.Context.findActivity(): android.app.Activity
  */
 @Composable
 fun PhoneCodeApp() {
-    val vm: ChatViewModel = viewModel()
+    val application = LocalContext.current.applicationContext as PhoneCodeApplication
+    val vm = application.chatViewModel
     val settingsVm: SettingsViewModel = viewModel()
     val settings by settingsVm.settings.collectAsState()
     val settingsLoaded by settingsVm.loaded.collectAsState()

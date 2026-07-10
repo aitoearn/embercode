@@ -1,5 +1,7 @@
 package dev.phonecode.provider.domain
 
+enum class FailureKind { AUTH, RATE_LIMIT, QUOTA, INVALID_REQUEST, SERVER, NETWORK, PARSE, UNKNOWN }
+
 /**
  * The single normalized event stream the agent consumes, provider-independent.
  * Tool calls are addressed by [index] (position within the assistant turn):
@@ -33,7 +35,14 @@ sealed interface StreamEvent {
      * Transport/parse/API error surfaced into the stream rather than thrown,
      * so a single collector handles both success and failure.
      */
-    data class Failed(val message: String) : StreamEvent
+    data class Failed(
+        val message: String,
+        val retryable: Boolean = false,
+        val retryAfterMillis: Long? = null,
+        val kind: FailureKind = FailureKind.UNKNOWN,
+        val statusCode: Int? = null,
+        val code: String? = null,
+    ) : StreamEvent
 }
 
 enum class StopReason { END_TURN, TOOL_USE, MAX_TOKENS, STOP_SEQUENCE, REFUSAL, OTHER }

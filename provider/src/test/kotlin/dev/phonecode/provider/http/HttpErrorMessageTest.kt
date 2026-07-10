@@ -1,5 +1,6 @@
 package dev.phonecode.provider.http
 
+import dev.phonecode.provider.domain.FailureKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
@@ -33,5 +34,17 @@ class HttpErrorMessageTest {
 
     @Test fun emptyBodyGivesBareStatus() {
         assertEquals("HTTP 500", httpErrorMessage(500, null, ""))
+    }
+
+    @Test fun classifiesQuotaBeforeGenericRateLimit() {
+        assertEquals(FailureKind.QUOTA, classifyFailure(429, "usage_limit_exceeded", "Go usage limit exceeded"))
+        assertEquals(FailureKind.RATE_LIMIT, classifyFailure(429, null, "too many requests"))
+    }
+
+    @Test fun unsupportedCountryIsNotReportedAsBadCredentials() {
+        assertEquals(
+            FailureKind.INVALID_REQUEST,
+            classifyFailure(403, "unsupported_country_region_territory", "Country not supported"),
+        )
     }
 }

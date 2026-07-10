@@ -2,6 +2,7 @@ package dev.phonecode.provider.http
 
 import dev.phonecode.provider.Fixtures
 import dev.phonecode.provider.domain.ChatMessage
+import dev.phonecode.provider.domain.FailureKind
 import dev.phonecode.provider.domain.ChatRequest
 import dev.phonecode.provider.domain.MessagePart
 import dev.phonecode.provider.domain.Role
@@ -16,6 +17,7 @@ import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -72,6 +74,52 @@ class ProviderStreamingTest {
         assertEquals("session-7", request.getHeader("session-id"))
         assertEquals("opencode", request.getHeader("originator"))
         assertEquals(null, request.getHeader("OpenAI-Beta"))
+        server.shutdown()
+    }
+
+    @Test fun transientHttpFailureCarriesRetryMetadata() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(503)
+                .setHeader("Retry-After", "3")
+                .setBody("""{"error":{"message":"overloaded"}}"""),
+        )
+        server.start()
+        val preset = ProviderPreset(
+            "t", "T", server.url("/v1").toString().trimEnd('/'),
+            WireFormat.OPENAI_COMPAT, AuthScheme.BEARER,
+        )
+
+        val failure = OpenAiCompatProvider(preset, "k", OkHttpClient()).stream(userReq()).toList().single() as StreamEvent.Failed
+
+        assertTrue(failure.retryable)
+        assertEquals(3_000L, failure.retryAfterMillis)
+        assertEquals(FailureKind.SERVER, failure.kind)
+        assertEquals(503, failure.statusCode)
+        assertTrue(failure.message.contains("overloaded"))
+        server.shutdown()
+    }
+
+    @Test fun quotaFailureCarriesStructuredCode() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(429)
+                .setBody("""{"error":{"code":"usage_limit_exceeded","message":"Go usage limit exceeded"}}"""),
+        )
+        server.start()
+        val preset = ProviderPreset(
+            "opencode-go", "OpenCode Go", server.url("/v1").toString().trimEnd('/'),
+            WireFormat.OPENAI_COMPAT, AuthScheme.BEARER,
+        )
+
+        val failure = OpenAiCompatProvider(preset, "k", OkHttpClient()).stream(userReq()).toList().single() as StreamEvent.Failed
+
+        assertEquals(FailureKind.QUOTA, failure.kind)
+        assertEquals("usage_limit_exceeded", failure.code)
+        assertEquals(429, failure.statusCode)
+        assertFalse(failure.retryable)
         server.shutdown()
     }
 }

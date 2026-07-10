@@ -16,6 +16,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.FlowCollector
 import kotlinx.coroutines.flow.flow
@@ -118,33 +119,63 @@ class AgentLoop(
                 val text = StringBuilder()
                 val reasoning = StringBuilder()
                 val toolCalls = sortedMapOf<Int, ToolCallAccumulator>()
-                var failure: String? = null
+                var failure: StreamEvent.Failed? = null
+                var emittedContent = false
+                var attempt = 0
 
-                provider.stream(request).collect { event ->
-                    when (event) {
-                        is StreamEvent.TextDelta -> { text.append(event.text); emit(AgentEvent.TextDelta(event.text)) }
-                        is StreamEvent.ReasoningDelta -> { reasoning.append(event.text); emit(AgentEvent.ReasoningDelta(event.text)) }
-                        is StreamEvent.ToolCallStart ->
-                            // Back-fill a synthetic id if a gateway omitted one, so the assistant
-                            // ToolCall and its matching ToolResult.callId stay paired on the next turn.
-                            toolCalls[event.index] = ToolCallAccumulator(event.id.ifBlank { "call_${event.index}" }, event.name)
-                        // A fragment before its ToolCallStart is dropped; the provider guarantees Start precedes args per index.
-                        is StreamEvent.ToolCallArgsDelta -> toolCalls[event.index]?.args?.append(event.jsonFragment)
-                        is StreamEvent.ToolCallEnd -> Unit
-                        is StreamEvent.Usage -> {
-                            lastUsageTotal = event.input + event.output +
-                                (event.cacheRead ?: 0) + (event.cacheWrite ?: 0) + (event.reasoning ?: 0)
-                            emit(AgentEvent.Usage(event.input, event.output))
+                while (true) {
+                    failure = null
+                    provider.stream(request).collect { event ->
+                        when (event) {
+                            is StreamEvent.TextDelta -> {
+                                emittedContent = true
+                                text.append(event.text)
+                                emit(AgentEvent.TextDelta(event.text))
+                            }
+                            is StreamEvent.ReasoningDelta -> {
+                                emittedContent = true
+                                reasoning.append(event.text)
+                                emit(AgentEvent.ReasoningDelta(event.text))
+                            }
+                            is StreamEvent.ToolCallStart -> {
+                                emittedContent = true
+                                toolCalls[event.index] = ToolCallAccumulator(event.id.ifBlank { "call_${event.index}" }, event.name)
+                            }
+                            is StreamEvent.ToolCallArgsDelta -> {
+                                emittedContent = true
+                                toolCalls[event.index]?.args?.append(event.jsonFragment)
+                            }
+                            is StreamEvent.ToolCallEnd -> emittedContent = true
+                            is StreamEvent.Usage -> {
+                                emittedContent = true
+                                lastUsageTotal = event.input + event.output +
+                                    (event.cacheRead ?: 0) + (event.cacheWrite ?: 0) + (event.reasoning ?: 0)
+                                emit(AgentEvent.Usage(event.input, event.output))
+                            }
+                            is StreamEvent.Done -> Unit
+                            is StreamEvent.Failed -> failure = event
                         }
-                        is StreamEvent.Done -> Unit
-                        is StreamEvent.Failed -> failure = event.message
                     }
+                    val current = failure ?: break
+                    if (!current.retryable || emittedContent || attempt >= MAX_RETRIES) break
+                    attempt++
+                    val wait = retryDelay(attempt, current.retryAfterMillis)
+                    emit(AgentEvent.Retrying(attempt, current.message))
+                    delay(wait)
                 }
 
                 // Preserve the conversation so far (prior history + the user's message) on failure, so a
                 // dropped connection does not reset context for the next message. The partial/failed assistant
                 // turn is intentionally excluded - it is only appended on the next line, after this check.
-                failure?.let { emit(AgentEvent.Error(it, messages.toList())); return@flow }
+                failure?.let {
+                    val preserved = if (text.isNotEmpty() || reasoning.isNotEmpty()) {
+                        messages + ChatMessage(Role.ASSISTANT, assistantParts(reasoning, text, emptyMap()))
+                    } else {
+                        messages.toList()
+                    }
+                    emit(AgentEvent.Error(it.message, preserved, it.kind, it.statusCode, it.retryAfterMillis, it.code))
+                    return@flow
+                }
                 messages += ChatMessage(Role.ASSISTANT, assistantParts(reasoning, text, toolCalls))
 
                 if (lastStep) {
@@ -157,14 +188,23 @@ class AgentLoop(
                 // by a tool_result or the next request is rejected. A non-TOOL_USE stop that still carried
                 // tool calls (gateway quirk) would otherwise orphan them. No calls -> nothing to execute.
                 if (toolCalls.isNotEmpty()) {
+                    emit(AgentEvent.HistoryCheckpoint(messages.toList()))
                     if (isDoomLoop(recentSignatures, toolCalls.values)) {
                         if (!context.requestPermission("doom_loop", "repeating the same tool call(s)")) {
-                            emit(AgentEvent.Error("stopped: repeated identical tool calls")); return@flow
+                            val stopped = messages + ChatMessage(
+                                Role.USER,
+                                toolCalls.values.map {
+                                    MessagePart.ToolResult(it.id, "stopped: repeated identical tool calls", isError = true)
+                                },
+                            )
+                            emit(AgentEvent.Error("stopped: repeated identical tool calls", stopped))
+                            return@flow
                         }
                         recentSignatures.clear()
                     }
                     val resultParts = executeBatch(toolCalls.values.toList(), mode)
                     messages += ChatMessage(Role.USER, resultParts)
+                    emit(AgentEvent.HistoryCheckpoint(messages.toList()))
                     hasMoreToolCalls = true
                 } else {
                     hasMoreToolCalls = false
@@ -262,7 +302,11 @@ class AgentLoop(
 
     private companion object {
         const val DOOM_LOOP_THRESHOLD = 3
+        const val MAX_RETRIES = 5
         const val MAX_STEPS_REMINDER =
             "<system-reminder>Maximum steps reached. Tools are disabled. Respond with text only to summarize and wrap up.</system-reminder>"
     }
 }
+
+private fun retryDelay(attempt: Int, requested: Long?): Long =
+    (requested ?: (2_000L * (1L shl (attempt - 1)))).coerceIn(0L, 30_000L)

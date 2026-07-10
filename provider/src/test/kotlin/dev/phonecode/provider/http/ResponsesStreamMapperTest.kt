@@ -1,5 +1,6 @@
 package dev.phonecode.provider.http
 
+import dev.phonecode.provider.domain.FailureKind
 import dev.phonecode.provider.domain.StopReason
 import dev.phonecode.provider.domain.StreamEvent
 import org.junit.Assert.assertEquals
@@ -57,6 +58,6 @@ class ResponsesStreamMapperTest {
         val events = run(
             "response.failed" to """{"type":"response.failed","response":{"error":{"message":"quota exceeded"}}}""",
         )
-        assertEquals(listOf(StreamEvent.Failed("quota exceeded")), events)
+        assertEquals(listOf(StreamEvent.Failed("quota exceeded", kind = FailureKind.QUOTA)), events)
     }
 }

@@ -4,7 +4,7 @@
 
 <h1 align="center">PhoneCode</h1>
 
-<p align="center"><strong>A native Android coding agent that runs entirely on your phone.</strong></p>
+<p align="center"><strong>A private, native coding agent that runs entirely on your Android phone.</strong></p>
 
 <p align="center">
   <a href="https://dttdrv.xyz/phonecode">Website</a> ·
@@ -17,9 +17,9 @@
 </p>
 
 PhoneCode runs the agent loop on your device. It reads, writes, and edits files in per-project
-workspaces, runs git natively, searches the web, and talks to whichever model provider you choose.
-There is no backend, no telemetry, and no account. Your API keys live in the Android Keystore, and
-your prompts go only to the provider you pick.
+workspaces, runs git and a full Alpine Linux userland locally, searches the web, and talks to the
+model provider you choose. There is no PhoneCode backend, telemetry, or required account. API keys
+live in the Android Keystore, and prompts go only to the selected provider.
 
 ## App
 
@@ -41,6 +41,16 @@ your prompts go only to the provider you pick.
 
 <p align="center"><sub>Onboarding · Settings</sub></p>
 
+## 0.2.3
+
+- Turns continue while PhoneCode is backgrounded or the phone is locked.
+- Chat and tool checkpoints are written atomically. If Android kills the process, PhoneCode restores
+  the turn, marks unresolved tools as interrupted, and never replays a file-changing action silently.
+- ChatGPT sign-in now supports IPv4 and IPv6 loopback callbacks, rotating-token refresh, immediate
+  authorization errors, and Codex-powered delegated tasks.
+- Provider failures carry structured status, retry, and reset information. OpenCode Go distinguishes
+  rate limits from exhausted usage and includes MiMo V2.5.
+
 PhoneCode is an independent project inspired by OpenCode and interoperable with it. It is not a
 build of OpenCode.
 
@@ -55,6 +65,8 @@ build of OpenCode.
   edit, glob, grep, ls, apply_patch, todo lists, plan and build modes, user questions, subagents
   (task tool), webfetch with free web search, MCP servers (Streamable HTTP and SSE), and
   progressive-disclosure skills (SKILL.md).
+- **Local Linux environment** built from BusyBox and Alpine under PRoot. The agent can install
+  Python, Node.js, npm packages, compilers, and other tools with `apk` inside its private workspace.
 - **Providers**: OpenCode Zen and Go, Anthropic, OpenAI, OpenRouter, Google, xAI, DeepSeek,
   Mistral, and custom endpoints, with the catalog sourced from models.dev. You can enable or disable
   providers, hide models, and mark favourites. The agent can add providers and models itself by
@@ -69,20 +81,20 @@ build of OpenCode.
   or allow them automatically per your workspace settings.
 - **Streaming chat** with reasoning traces, a tool-activity timeline, monochrome syntax
   highlighting, a context-window gauge, and per-model token limits that drive compaction.
+- **Crash-safe sessions** with foreground execution, bounded pre-output retries, durable tool
+  checkpoints, atomic local storage, and explicit recovery when Android interrupts a turn.
 - **Privacy by construction**: keys are encrypted on-device, Android cloud backup is disabled, and
   manual chat/settings exports use a file you choose through the Storage Access Framework.
 
 ## Building
 
 Requirements: JDK 21 and the Android SDK (platform 37.0, build-tools 36). Android Studio is not
-needed.
+needed. PhoneCode supports Android 8.0 and newer.
 
-```powershell
-$env:JAVA_HOME = "<path to JDK 21>"
-.\gradlew.bat :app:assembleRelease   # minified release build -> app/build/outputs/apk/release/
-.\gradlew.bat :app:bundleRelease     # Play bundle -> app/build/outputs/bundle/release/
-.\gradlew.bat :app:assembleDebug     # debuggable build
-.\gradlew.bat test                   # all module unit tests (incl. Robolectric UI smoke tests)
+```bash
+./gradlew :app:assembleRelease
+./gradlew :app:bundleRelease
+./gradlew :provider:test :tools:test :agent:test :app:testDebugUnitTest :app:lintDebug
 ```
 
 The project has four modules. `:app` holds the Compose UI and Android glue. `:agent` holds the loop,

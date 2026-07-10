@@ -1,5 +1,6 @@
 package dev.phonecode.provider.http
 
+import dev.phonecode.provider.domain.FailureKind
 import dev.phonecode.provider.Fixtures
 import dev.phonecode.provider.domain.StopReason
 import dev.phonecode.provider.domain.StreamEvent
@@ -65,7 +66,7 @@ class AnthropicSseMappingTest {
 
     @Test fun pingIgnoredAndErrorTerminates() {
         assertEquals(
-            listOf(StreamEvent.Failed("Overloaded")),
+            listOf(StreamEvent.Failed("Overloaded", kind = FailureKind.SERVER, code = "overloaded_error")),
             run("anthropic/ping_then_error.sse"),
         )
     }

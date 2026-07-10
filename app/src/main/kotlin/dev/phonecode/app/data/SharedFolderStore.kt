@@ -35,7 +35,7 @@ class SharedFolderStore(private val file: File) {
 
     private fun save(folders: List<SharedFolder>) {
         file.parentFile?.mkdirs()
-        file.writeText(storeJson.encodeToString(serializer, folders))
+        file.writeTextAtomically(storeJson.encodeToString(serializer, folders))
     }
 
     private companion object {

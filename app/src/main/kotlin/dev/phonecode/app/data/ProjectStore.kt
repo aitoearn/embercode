@@ -23,7 +23,7 @@ class ProjectStore(private val file: File) {
 
     private fun save(projects: List<Project>) {
         file.parentFile?.mkdirs()
-        file.writeText(json.encodeToString(serializer, projects))
+        file.writeTextAtomically(json.encodeToString(serializer, projects))
     }
 
     fun add(id: String, name: String, folderId: String? = null): Project = locked {

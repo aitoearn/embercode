@@ -26,8 +26,8 @@ android {
         applicationId = "dev.phonecode"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "0.2.2"
+        versionCode = 23
+        versionName = "0.2.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables { useSupportLibrary = true }
     }
