@@ -46,6 +46,8 @@ class AgentLoop(
     private val contextManager: ContextManager = ContextManager(provider),
     /** Resolved per turn so a `plan_exit` approval can flip PLAN→BUILD mid-run. Defaults to the static config mode. */
     private val modeProvider: suspend () -> AgentMode = { config.mode },
+    private val toolProvider: suspend () -> ToolRegistry = { tools },
+    private val mcpInstructionsProvider: suspend () -> List<String> = { config.mcpInstructions },
 ) {
     private val argsJson = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -79,7 +81,8 @@ class AgentLoop(
                 val settings = turnSettings()
                 // Resolve mode + tools fresh each turn so a mid-run plan approval (PLAN→BUILD) takes effect.
                 val mode = modeProvider()
-                val activeTools = visibleTools(mode)
+                val stepTools = toolProvider().snapshot()
+                val activeTools = visibleTools(mode, stepTools)
                 val toolDefs = activeTools.map { ToolDef(it.name, it.description, it.parameters) }
                 // A fresh AgentLoop starts at lastUsageTotal=0, so seed from a size estimate of the
                 // accumulated history; otherwise compaction never fires on the first turn and an
@@ -100,7 +103,12 @@ class AgentLoop(
                     }
                 }
                 val lastStep = step >= config.maxSteps
-                val system = PromptAssembler.assemble(config, settings.model, activeTools, mode)
+                val system = PromptAssembler.assemble(
+                    config.copy(mcpInstructions = mcpInstructionsProvider()),
+                    settings.model,
+                    activeTools,
+                    mode,
+                )
                 val wire = if (lastStep) {
                     messages + ChatMessage(Role.USER, listOf(MessagePart.Text(MAX_STEPS_REMINDER)))
                 } else {
@@ -202,7 +210,7 @@ class AgentLoop(
                         }
                         recentSignatures.clear()
                     }
-                    val resultParts = executeBatch(toolCalls.values.toList(), mode)
+                    val resultParts = executeBatch(toolCalls.values.toList(), mode, stepTools)
                     messages += ChatMessage(Role.USER, resultParts)
                     emit(AgentEvent.HistoryCheckpoint(messages.toList()))
                     hasMoreToolCalls = true
@@ -223,15 +231,19 @@ class AgentLoop(
     }
 
     /** Emits ToolStarted for the batch, runs it (parallel unless any tool is sequential), then emits ToolFinished in call order. */
-    private suspend fun FlowCollector<AgentEvent>.executeBatch(calls: List<ToolCallAccumulator>, mode: AgentMode): List<MessagePart> {
+    private suspend fun FlowCollector<AgentEvent>.executeBatch(
+        calls: List<ToolCallAccumulator>,
+        mode: AgentMode,
+        registry: ToolRegistry,
+    ): List<MessagePart> {
         calls.forEach { emit(AgentEvent.ToolStarted(it.id, it.name, it.args.toString())) }
         // Serialize whenever a tool can prompt for permission (mutating) or opts into sequential,
         // so permission dialogs never race - even if a tool sets sequential=false while mutating.
-        val anySequential = calls.any { val t = tools.get(it.name); t?.sequential == true || t?.mutating == true }
+        val anySequential = calls.any { val tool = registry.get(it.name); tool?.sequential == true || tool?.mutating == true }
         val results = if (anySequential) {
-            calls.map { executeOne(it, mode) }
+            calls.map { executeOne(it, mode, registry) }
         } else {
-            coroutineScope { calls.map { call -> async { executeOne(call, mode) } }.awaitAll() }
+            coroutineScope { calls.map { call -> async { executeOne(call, mode, registry) } }.awaitAll() }
         }
         return calls.mapIndexed { i, call ->
             val result = results[i]
@@ -240,8 +252,8 @@ class AgentLoop(
         }
     }
 
-    private suspend fun executeOne(call: ToolCallAccumulator, mode: AgentMode): ToolResult {
-        val tool = tools.get(call.name)
+    private suspend fun executeOne(call: ToolCallAccumulator, mode: AgentMode, registry: ToolRegistry): ToolResult {
+        val tool = registry.get(call.name)
             ?: return ToolResult("unknown tool: ${call.name}", isError = true)
         // Defense-in-depth: PLAN must never mutate, even if a tool was somehow requested.
         if (mode == AgentMode.PLAN && tool.mutating) {
@@ -277,9 +289,9 @@ class AgentLoop(
         toolCalls.values.forEach { add(MessagePart.ToolCall(it.id, it.name, it.args.toString())) }
     }
 
-    private fun visibleTools(mode: AgentMode): List<Tool> = when (mode) {
-        AgentMode.BUILD -> tools.all().filterNot { it.planOnly }
-        AgentMode.PLAN -> tools.all().filterNot { it.mutating }
+    private fun visibleTools(mode: AgentMode, registry: ToolRegistry): List<Tool> = when (mode) {
+        AgentMode.BUILD -> registry.all().filterNot { it.planOnly }
+        AgentMode.PLAN -> registry.all().filterNot { it.mutating }
     }
 
     private fun parseArgs(json: String): JsonObject =

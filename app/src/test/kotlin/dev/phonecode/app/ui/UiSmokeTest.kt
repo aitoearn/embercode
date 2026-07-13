@@ -54,22 +54,21 @@ class UiSmokeTest {
     @Test
     fun chatControlsOpenWithoutCrashing() {
         dismissOnboardingIfPresent()
-        compose.onNodeWithContentDescription("Tools").performClick()
-        compose.onNodeWithText("Upload").assertIsDisplayed()
-        compose.onNodeWithText("Mode").assertIsDisplayed()
-        compose.onNodeWithText("Upload").performClick()
-        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Attach photo or file").assertIsDisplayed()
 
         // Model sheet opens from the composer's model pill (header is always visible; specific
         // model rows may sit below the sheet's scroll fold).
         compose.onNodeWithText("Claude Opus 4.8").performClick()
         compose.onNodeWithText("Model & reasoning").assertIsDisplayed()
+        compose.onNodeWithText("Agent mode").assertIsDisplayed()
+        compose.onAllNodesWithText("Build").onLast().assertIsDisplayed()
+        compose.onNodeWithText("Plan").assertIsDisplayed()
         compose.onAllNodesWithText("Claude Opus 4.8").onLast().performClick()
         val done = compose.onAllNodesWithText("Done")
         if (done.fetchSemanticsNodes().isNotEmpty()) done.onFirst().performClick()
         compose.waitForIdle()
 
-        // New chat.
+        compose.onNodeWithContentDescription("Menu").performClick()
         compose.onNodeWithContentDescription("New chat").performClick()
         compose.waitForIdle()
 
@@ -84,6 +83,8 @@ class UiSmokeTest {
     fun drawerOpensAndSettingsGearWorks() {
         dismissOnboardingIfPresent()
         compose.onNodeWithContentDescription("Menu").performClick()
+        compose.onNodeWithText("Skills").assertIsDisplayed()
+        compose.onNodeWithText("MCP").assertIsDisplayed()
         compose.onNodeWithContentDescription("Settings").performClick()
         compose.onNodeWithText("Providers").assertIsDisplayed()
     }
@@ -134,5 +135,29 @@ class UiSmokeTest {
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithText("Open-source licenses").performClick()
         compose.onNodeWithContentDescription("Back").performClick()
+    }
+
+    @Test
+    fun skillsAndMcpExposeManagementControls() {
+        dismissOnboardingIfPresent()
+        compose.onNodeWithContentDescription("Menu").performClick()
+        compose.onNodeWithContentDescription("Settings").performClick()
+
+        compose.onNodeWithText("MCP servers").performClick()
+        compose.onNodeWithText("Add server").performClick()
+        compose.onNodeWithText("Server name").assertIsDisplayed()
+        compose.onNodeWithText("Remote URL").assertIsDisplayed()
+        compose.onNodeWithText("HTTP headers").assertIsDisplayed()
+        compose.onNodeWithText("Connection timeout").assertIsDisplayed()
+        compose.onNodeWithText("Test").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithContentDescription("Back").performClick()
+
+        compose.onNodeWithText("Skills").performClick()
+        compose.onNodeWithText("All").assertIsDisplayed()
+        compose.onNodeWithText("Active").assertIsDisplayed()
+        compose.onNodeWithText("Off").assertIsDisplayed()
+        compose.onNodeWithText("Issues").assertIsDisplayed()
+        compose.onNodeWithText("Skill files reload automatically", substring = true).assertIsDisplayed()
     }
 }

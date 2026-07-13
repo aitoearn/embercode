@@ -1,12 +1,16 @@
 # Third-party software and attribution
 
-## OpenCode (adapted source)
+This inventory covers the current source tree and development artifact. PhoneCode's original code
+is licensed under Apache License 2.0 as stated in the root `LICENSE` file. Third-party components
+remain governed by their own licenses, and OpenCode's MIT license applies only to the adapted
+OpenCode material.
 
-PhoneCode's agent draws on **OpenCode** (https://github.com/anomalyco/opencode, https://opencode.ai):
-its prompt structure, tool schemas, and loop design are adapted from OpenCode's, and several tools
-(webfetch, todo, external-directory, question, plan_exit, task) mirror OpenCode's equivalents.
+## OpenCode adapted material
 
-OpenCode is MIT licensed. The required notice is preserved here:
+PhoneCode's prompt structure, tool schemas, loop design, and several tools are adapted from
+[OpenCode](https://github.com/anomalyco/opencode). PhoneCode is independent and is not built by,
+endorsed by, or affiliated with the OpenCode team or Anomaly. OpenCode, OpenCode Zen, and OpenCode Go
+are used only to describe origins and interoperability.
 
     MIT License
 
@@ -30,55 +34,100 @@ OpenCode is MIT licensed. The required notice is preserved here:
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 
-PhoneCode is an independent project and is not built by, endorsed by, or affiliated with the OpenCode
-team (Anomaly). "OpenCode", "OpenCode Zen", and "OpenCode Go" are used nominatively to describe
-interoperability and origins.
+## Android and JVM runtime
 
-# Runtime libraries and visual assets
+The release runtime graph includes the following license families. Test-only dependencies are not
+shipped in the app and must be inventoried separately if test artifacts are distributed.
 
-| Component | Use | License |
+| Components | License |
+| --- | --- |
+| AndroidX, Jetpack Compose, Material icons, Navigation, Tink, Gson, JSpecify, Guava ListenableFuture | Apache-2.0 |
+| Kotlin, kotlinx.coroutines, kotlinx.serialization, AtomicFU | Apache-2.0 |
+| OkHttp and Okio | Apache-2.0 |
+| Haze | Apache-2.0 |
+| Eclipse JGit | Eclipse Distribution License 1.0 |
+| JavaEWAH and Apache Commons Codec | Apache-2.0 |
+| SLF4J | MIT |
+
+The resolved release graph must be exported into the release SBOM and checked against this table for
+every release. A dependency-family summary is not a substitute for the final component-level SBOM
+and license bundle.
+
+## Mermaid 10.9.3 bundle
+
+- File: `app/src/main/assets/mermaid.min.js`
+- SHA-256: `5a8ec91820bd55afef049068489369910e5d6ce70c8103952f27e29d3e76e8bc`
+- Exact origin: `mermaid@10.9.3`, `dist/mermaid.min.js`, npm package integrity
+  `sha512-V80X1isSEvAew...EKImBlUfFYArw==`
+- Mermaid license: MIT, Copyright (c) 2014-2022 Knut Sveidqvist
+
+The committed bytes match the published npm package exactly. The single-file build embeds Mermaid's
+runtime dependencies, including sanitize-url, Cytoscape, D3, dagre-d3-es, Day.js, DOMPurify, ELK,
+KaTeX, khroma, Lodash, mdast utilities, Stylis, UUID, and related transitive code. Their exact resolved
+versions and notices are not present in this repository. Mermaid 10.9.6 also backports later security
+fixes that 10.9.3 lacks. Replace the asset with a supported pinned build and publish its generated
+third-party-notice inventory before release.
+
+## Fonts
+
+| File | SHA-256 | License |
 | --- | --- | --- |
-| AndroidX and Jetpack Compose | Android UI, lifecycle, navigation, and platform integration | Apache License 2.0 |
-| Kotlin and kotlinx | Language runtime, coroutines, and serialization | Apache License 2.0 |
-| OkHttp | HTTP, streaming, and server-sent events | Apache License 2.0 |
-| Eclipse JGit | Git repository operations | Eclipse Distribution License 1.0 |
-| Haze | Translucent Compose materials | Apache License 2.0 |
-| Inter | Interface typography | SIL Open Font License 1.1 |
-| JetBrains Mono | Code typography | SIL Open Font License 1.1 |
+| `inter_variable.ttf` | `29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031` | SIL Open Font License 1.1, Copyright 2016 The Inter Project Authors |
+| `jetbrainsmono_bold.ttf` | `d22c4f3821d725eb01210d278d95dfcfcaadc34699a06658d47c8a5cc5830ada` | SIL Open Font License 1.1, Copyright 2020 The JetBrains Mono Project Authors |
+| `jetbrainsmono_medium.ttf` | `d16e6dc99672734698d629705f617c79f6eb6040f5113efe3a145204dc988109` | SIL Open Font License 1.1, Copyright 2020 The JetBrains Mono Project Authors |
+| `jetbrainsmono_regular.ttf` | `e6fd0d7e91550b3ed2b735d4312474362c4716edc4fc0577a0f61ed782d5aed1` | SIL Open Font License 1.1, Copyright 2020 The JetBrains Mono Project Authors |
 
-# Vendored binary artifacts
+The exact upstream release and source-file path for each committed font has not been recorded. Pin
+and reproduce the font files, preserve their copyright statements, and package the full OFL text
+before release.
 
-Prebuilt third-party files committed into the app, with pinned sources so each is auditable: re-fetch
-from the pinned version and compare the SHA-256. The repository verifies the committed files against
-`VENDORED_CHECKSUMS` on every check run.
+## Alpine 3.21.7 development root filesystem
 
-## Alpine Linux rootfs (bundled, for the proot Linux tier)
+- File: `app/src/main/assets/alpine-aarch64.rootfs`
+- SHA-256: `d1d1a3fae5f4d6146e9742790a47fcb116199622cfb8439f218a4d5fbe5000da`
+- Exact binary origin:
+  `https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.7-aarch64.tar.gz`
 
-- **File:** `app/src/main/assets/alpine-aarch64.rootfs` (a gzipped tar; opaque extension so AGP stores it
-  verbatim). Extracted on first run into the app's storage; proot runs the agent's shell inside it, so
-  `apk add python3 ...` works offline of any rootfs download.
-- **Source:** Alpine Linux aarch64 minirootfs, https://alpinelinux.org
-  (`https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/aarch64/alpine-minirootfs-3.21.7-aarch64.tar.gz`).
-- **SHA-256:** `d1d1a3fae5f4d6146e9742790a47fcb116199622cfb8439f218a4d5fbe5000da`
-- **Licenses:** a base system of free software - musl (MIT), busybox (GPL-2.0), apk-tools (GPL-2.0), and
-  others; installed packages carry their own licenses. See https://alpinelinux.org.
+The root filesystem's installed-package database records:
 
-## Mermaid (diagram rendering)
+| Package | Version | Source package | Declared license |
+| --- | --- | --- | --- |
+| alpine-baselayout, alpine-baselayout-data | 3.6.8-r1 | alpine-baselayout | GPL-2.0-only |
+| alpine-keys | 2.5-r0 | alpine-keys | MIT |
+| alpine-release | 3.21.7-r0 | alpine-base | MIT |
+| apk-tools | 2.14.6-r3 | apk-tools | GPL-2.0-only |
+| busybox, busybox-binsh, ssl_client | 1.37.0-r14 | busybox | GPL-2.0-only |
+| ca-certificates-bundle | 20260413-r0 | ca-certificates | MPL-2.0 AND MIT |
+| libcrypto3, libssl3 | 3.3.7-r0 | openssl | Apache-2.0 |
+| musl | 1.2.5-r11 | musl | MIT |
+| musl-utils | 1.2.5-r11 | musl | MIT AND BSD-2-Clause AND GPL-2.0-or-later |
+| scanelf | 1.3.8-r1 | pax-utils | GPL-2.0-only |
+| zlib | 1.3.2-r0 | zlib | Zlib |
 
-- **File:** `app/src/main/assets/mermaid.min.js`
-- **What:** the Mermaid diagram engine, inlined into a WebView to render ` ```mermaid ` blocks (trees,
-  graphs, flowcharts, sequence/state/ER diagrams) on-device with no network.
-- **Source:** https://www.npmjs.com/package/mermaid, `dist/mermaid.min.js` (the UMD build exposing
-  `window.mermaid`).
-- **Pinned version:** 10.9.3
-- **SHA-256:** `5a8ec91820bd55afef049068489369910e5d6ce70c8103952f27e29d3e76e8bc`
-- **License:** MIT.
+The minirootfs does not include complete corresponding source or the complete license bundle for
+these packages. An upstream binary URL alone does not satisfy PhoneCode's obligations as a binary
+redistributor. Do not distribute this rootfs until the exact source archives, Alpine build recipes
+and patches, license texts, and a machine-readable SBOM are published beside the artifact.
 
-To re-verify:
+## PRoot development prototype
 
-    curl -fsSL https://cdn.jsdelivr.net/npm/mermaid@10.9.3/dist/mermaid.min.js | shasum -a 256
+- Files: `app/src/main/jniLibs/arm64-v8a/libproot.so` and `libproot-loader.so`
+- Licenses represented in the binaries: PRoot GPL-2.0-or-later and talloc LGPL-3.0-or-later
+- Detailed audit: `app/src/main/jniLibs/PROVENANCE.md`
 
-## PRoot (Linux userland)
+The committed hashes do not match the formerly cited upstream build archive. Complete corresponding
+source and reproducible build inputs are missing. These binaries are not distributable until they
+are removed or replaced with a fully traceable build.
 
-See `app/src/main/jniLibs/PROVENANCE.md` for the arm64 `libproot.so` + `libproot-loader.so` provenance
-(green-green-avk/build-proot-android, pinned commit, SHA-256, licenses).
+## Planned VM runtime
+
+QEMU, the Linux kernel, the initramfs, and their linked dependency closure are not currently packaged
+in the app. Their proof-of-concept files in `/tmp` are not release artifacts. Before adding any of
+them, publish complete corresponding source, all Android changes, reproducible build scripts,
+toolchain versions, license texts, an SPDX or CycloneDX SBOM, and final artifact hashes. QEMU must
+remain a separate executable process rather than being linked into PhoneCode.
+
+## Release status
+
+The current release gate remains closed. The exact blockers and remediation procedure are in
+`legal/RELEASE_COMPLIANCE.md`.

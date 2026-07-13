@@ -74,13 +74,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
@@ -97,6 +95,7 @@ import androidx.compose.material.icons.outlined.Build
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.HelpOutline
 import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Search
@@ -117,6 +116,7 @@ import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -127,6 +127,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -149,12 +150,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.phonecode.agent.AgentMode
 import dev.phonecode.app.R
 import dev.phonecode.app.agent.ChatLine
 import dev.phonecode.app.agent.ChatUiState
 import dev.phonecode.app.agent.ChatViewModel
+import dev.phonecode.app.agent.AiReportSubmission
 import dev.phonecode.app.agent.ModelOption
 import dev.phonecode.app.agent.PermissionRequest
 import dev.phonecode.app.agent.QuestionRequest
@@ -164,15 +167,19 @@ import dev.phonecode.app.ui.components.PcDivider
 import dev.phonecode.app.ui.components.PcIconButton
 import dev.phonecode.app.ui.components.MorphingMenu
 import dev.phonecode.app.ui.components.PcRoundButton
-import dev.phonecode.app.ui.components.elasticOverscroll
+import dev.phonecode.app.ui.components.contentVerticalScroll
+import dev.phonecode.app.ui.components.predictiveBackTransform
+import dev.phonecode.app.ui.components.rememberContentOverscroll
+import dev.phonecode.app.ui.components.rememberPredictiveBackMotion
+import dev.phonecode.app.ui.components.shortContentVerticalOverscroll
 import dev.phonecode.app.ui.components.pressFeedback
 import androidx.compose.material3.ripple
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.HazeStyle
+import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import dev.phonecode.app.ui.theme.Ethereal
 import dev.phonecode.app.ui.theme.blurFade
-import dev.phonecode.app.ui.theme.blurPill
 import dev.phonecode.app.ui.theme.phoneHaze
 import dev.phonecode.app.ui.theme.phoneHazeBand
 import dev.phonecode.app.ui.theme.PcMono
@@ -227,13 +234,17 @@ fun ChatScreen(
     // Round-4: the custom morphing popouts are retired for standard M3 modal bottom sheets
     // ("improve the pop-out menus, substantially. Maybe use the default Material3 Expressive
     // for now") - platform motion and scrim, native back/swipe dismissal, zero morph jank.
-    var toolsOpen by remember { mutableStateOf(false) }
     var modelOpen by remember { mutableStateOf(false) }
     var contextOpen by remember { mutableStateOf(false) }
+    var reportOpen by remember { mutableStateOf(false) }
     var composerHeight by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
+    val listCanScroll = listState.canScrollBackward || listState.canScrollForward
+    var followOutput by remember(state.currentSessionId) { mutableStateOf(true) }
+    val listOverscroll = rememberContentOverscroll()
     val scope = rememberCoroutineScope()
     val empty = state.lines.isEmpty() && state.streaming.isEmpty() && state.streamingReasoning.isEmpty()
+    val blurChrome = !empty && listCanScroll
     val imeVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
     val attachContext = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -257,13 +268,20 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(state.lines.size, state.streaming.length, state.streamingReasoning.length) {
-        // The list appends exactly one combined streaming item, so this is a single flag, not a sum.
+    LaunchedEffect(listState, state.currentSessionId) {
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }.collect { (scrolling, canScrollForward) ->
+            if (scrolling) followOutput = !canScrollForward
+        }
+    }
+
+    LaunchedEffect(state.currentSessionId, state.lines.size) {
+        if (state.lines.lastOrNull() is ChatLine.User) followOutput = true
+    }
+
+    LaunchedEffect(state.currentSessionId, state.lines.size, state.streaming.length, state.streamingReasoning.length, followOutput) {
         val extra = if (state.streamingReasoning.isNotEmpty() || state.streaming.isNotEmpty()) 1 else 0
         val count = state.lines.size + extra
-        // Instant, not animated: iOS doesn't animate the sender's own scroll, and per-token
-        // animated scrolling during streaming is what reads as "lag".
-        if (count > 0) listState.scrollToItem(count - 1)
+        if (count > 0 && followOutput) listState.scrollToItem(count - 1)
     }
 
     // ChatGPT's signature "the model is typing" haptic: a light tick per streamed batch, debounced
@@ -308,7 +326,7 @@ fun ChatScreen(
         val hazeStyle = phoneHaze()
         val bandStyle = phoneHazeBand()
         val chromeDensity = LocalDensity.current
-        Box(Modifier.fillMaxSize().hazeSource(hazeState)) {
+        Box(Modifier.fillMaxSize().then(if (blurChrome) Modifier.hazeSource(hazeState) else Modifier)) {
             // New-chat transition: conversation fades out, empty state fades in (chatgpt-motion.md
             // - a fade, never a slide; exits faster than enters).
             AnimatedContent(
@@ -317,7 +335,25 @@ fun ChatScreen(
                 label = "emptySwap",
                 modifier = Modifier.fillMaxSize(),
             ) { isEmpty ->
-                Box(Modifier.fillMaxSize()) {
+                Box(
+                    Modifier.fillMaxSize()
+                        .then(
+                            if (isEmpty) {
+                                Modifier.padding(
+                                    top = statusInset + Spacing.navBarHeight + 8.dp,
+                                    bottom = with(chromeDensity) { composerHeight.toDp() } +
+                                        WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding() + 18.dp,
+                                )
+                            } else {
+                                Modifier
+                            },
+                        )
+                        .shortContentVerticalOverscroll(
+                            enabled = isEmpty || !listCanScroll,
+                            effect = listOverscroll,
+                        )
+                        .background(colors.background),
+                ) {
                 if (isEmpty) {
                     AnimatedVisibility(
                         visible = !imeVisible,
@@ -339,8 +375,9 @@ fun ChatScreen(
                     // should only ever come from the text field.
                     LazyColumn(
                         state = listState,
-                        modifier = Modifier.elasticOverscroll().fillMaxSize(),
-                        overscrollEffect = null,
+                        modifier = Modifier.fillMaxSize(),
+                        overscrollEffect = listOverscroll.takeIf { listCanScroll },
+                        userScrollEnabled = listCanScroll,
                         // Padding clears the floating chrome at rest while letting scrolled
                         // content slide beneath the pills (top) and the composer (bottom).
                         contentPadding = PaddingValues(
@@ -377,9 +414,11 @@ fun ChatScreen(
                                         reasoning = reasoningBefore(state.lines, i),
                                         streaming = false,
                                         showActions = i == lastAssistantIndex && !state.isRunning,
+                                        showReport = !state.isRunning,
                                         completedAt = state.lastCompletedAt,
                                         onCopy = { },
                                         onRedo = vm::redo,
+                                        onReport = { reportOpen = true },
                                         copyText = line.text,
                                     )
                                     // Thinking that wasn't followed by assistant text (e.g. think → tool call):
@@ -388,8 +427,8 @@ fun ChatScreen(
                                         text = "",
                                         reasoning = line.text,
                                         streaming = false,
-                                        showActions = false, completedAt = null,
-                                        onCopy = {}, onRedo = {}, copyText = "",
+                                        showActions = false, showReport = !state.isRunning, completedAt = null,
+                                        onCopy = {}, onRedo = {}, onReport = { reportOpen = true }, copyText = "",
                                     )
                                     is ChatLine.ToolActivity -> ToolActivityView(line)
                                 }
@@ -402,8 +441,8 @@ fun ChatScreen(
                                         text = state.streaming,
                                         reasoning = state.streamingReasoning.ifEmpty { null },
                                         streaming = true,
-                                        showActions = false, completedAt = null,
-                                        onCopy = {}, onRedo = {}, copyText = "",
+                                        showActions = false, showReport = false, completedAt = null,
+                                        onCopy = {}, onRedo = {}, onReport = {}, copyText = "",
                                     )
                                 }
                             }
@@ -415,30 +454,21 @@ fun ChatScreen(
 
         }
 
-        // ----- Floating chrome (each piece its own blurred pill; the band is gone) -----
-        // Status-bar dissolve: content blurs out as it slides under the very top. The band exists
-        // ONLY while content is actually beneath it - on a fresh chat nothing is under the bar,
-        // and an unconditional band read as a status-bar tint at launch (round-4 feedback).
-        androidx.compose.animation.AnimatedVisibility(
-            visible = !empty && listState.canScrollBackward,
-            enter = fadeIn(tween(200)),
-            exit = fadeOut(tween(200)),
-            modifier = Modifier.align(Alignment.TopCenter),
-        ) {
-            Box(
-                Modifier.fillMaxWidth().height(statusInset + 14.dp)
-                    .blurFade(hazeState, bandStyle, fromTop = true, edgeColor = colors.background),
-            )
-        }
+        Box(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth().height(statusInset + Spacing.navBarHeight + 8.dp)
+                .shadow(if (!empty && listState.canScrollBackward) 2.dp else 0.dp, RectangleShape, clip = false)
+                .then(if (blurChrome) Modifier.hazeEffect(hazeState, hazeStyle) else Modifier)
+                .background(if (blurChrome) colors.background.copy(alpha = 0.16f) else colors.background),
+        )
         Box(Modifier.align(Alignment.TopStart).padding(top = statusInset + 6.dp, start = 12.dp).clip(ShapePill).background(colors.surfaceContainerHigh)) {
             // Opening the drawer clears any open overlay so Back/scrim semantics stay unambiguous.
-            PcIconButton(Icons.Filled.Menu, "Menu") { toolsOpen = false; modelOpen = false; onOpenDrawer() }
+            PcIconButton(Icons.Filled.Menu, "Menu") { modelOpen = false; onOpenDrawer() }
         }
         Column(
             Modifier.align(Alignment.TopCenter).padding(top = statusInset + 6.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Box(Modifier.widthIn(max = 230.dp).blurPill(hazeState, hazeStyle)) {
+            Box(Modifier.widthIn(max = 230.dp).clip(ShapePill).background(colors.surfaceContainerHigh.copy(alpha = 0.72f))) {
                 Text(
                     chatTitle(state),
                     style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
@@ -450,8 +480,8 @@ fun ChatScreen(
             }
             // Model selector moved out of the composer into the title: tap to switch.
             Row(
-                Modifier.padding(top = 3.dp).blurPill(hazeState, hazeStyle, shape = ShapePill)
-                    .clickable { toolsOpen = false; modelOpen = true }
+                Modifier.padding(top = 3.dp).clip(ShapePill).background(colors.surfaceContainerHigh.copy(alpha = 0.72f))
+                    .clickable { modelOpen = true }
                     .padding(start = 11.dp, end = 7.dp, top = 3.dp, bottom = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(1.dp),
@@ -475,7 +505,7 @@ fun ChatScreen(
             val ctxFrac = state.contextLimit?.let { if (it > 0) ctxUsed.toFloat() / it else 0f } ?: 0f
             Box(
                 Modifier.size(40.dp).clip(ShapePill).background(colors.surfaceContainerHigh)
-                    .clickable { toolsOpen = false; modelOpen = false; contextOpen = true }
+                    .clickable { modelOpen = false; contextOpen = true }
                     .semantics { contentDescription = "Context usage ${(ctxFrac.coerceIn(0f, 1f) * 100).toInt()} percent" },
                 contentAlignment = Alignment.Center,
             ) {
@@ -489,9 +519,6 @@ fun ChatScreen(
                 ) {
                     ContextPopover(state)
                 }
-            }
-            Box(Modifier.clip(ShapePill).background(colors.surfaceContainerHigh)) {
-                PcIconButton(Icons.Filled.Add, "New chat") { vm.newChat() }
             }
         }
 
@@ -539,23 +566,10 @@ fun ChatScreen(
                 onRemovePhoto = { photos = emptyList() },
                 hazeState = hazeState,
                 hazeStyle = hazeStyle,
-                menuExpanded = toolsOpen,
-                onMenuToggle = { toolsOpen = !toolsOpen },
-                onMenuDismiss = { toolsOpen = false },
-                menuContent = {
-                    WrenchMenu(
-                        state = state,
-                        vm = vm,
-                        onUpload = {
-                            toolsOpen = false
-                            picker.launch(arrayOf("image/*", "text/*", "application/json", "application/xml"))
-                        },
-                        modifier = Modifier.width(320.dp),
-                    )
-                },
+                onUpload = { picker.launch(arrayOf("image/*", "text/*", "application/json", "application/xml")) },
                 onSend = {
                     rootView.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
-                    vm.send(input, photos); input = ""; photos = emptyList(); toolsOpen = false
+                    vm.send(input, photos); input = ""; photos = emptyList()
                 },
                 onStop = vm::cancel,
                 sendOnEnter = sendOnEnter,
@@ -575,6 +589,9 @@ fun ChatScreen(
         }
         state.pendingQuestion?.let { r ->
             QuestionDialog(r, onSubmit = { vm.resolveQuestion(it) }, onDismiss = { vm.resolveQuestion(emptyList()) })
+        }
+        if (reportOpen) {
+            AiReportFlow(onDismiss = { reportOpen = false }, onSubmit = vm::submitAiReport)
         }
     }
 }
@@ -602,15 +619,10 @@ private fun PcSheet(onDismiss: () -> Unit, content: @Composable ColumnScope.(clo
     }
 }
 
-/**
- * iMessage default-send entrance (apple-motion-exact.md §1): a ~24px rise on a critically
- * damped spring plus a 300ms ease-out fade - the bubble appears AT its list position; nothing
- * flies across the screen.
- */
 @Composable
 private fun Modifier.messageEnter(animate: Boolean): Modifier {
     if (!animate) return this
-    val offsetY = remember { androidx.compose.animation.core.Animatable(24f) }
+    val offsetY = remember { androidx.compose.animation.core.Animatable(12f) }
     val alpha = remember { androidx.compose.animation.core.Animatable(0f) }
     LaunchedEffect(Unit) {
         coroutineScope {
@@ -618,7 +630,7 @@ private fun Modifier.messageEnter(animate: Boolean): Modifier {
                 offsetY.animateTo(0f, spring(dampingRatio = 1f, stiffness = androidx.compose.animation.core.Spring.StiffnessLow, visibilityThreshold = 0.5f))
             }
             launch {
-                alpha.animateTo(1f, tween(300, easing = androidx.compose.animation.core.LinearOutSlowInEasing))
+                alpha.animateTo(1f, PhoneTweens.popEnter)
             }
         }
     }
@@ -748,9 +760,11 @@ private fun AssistantTurn(
     reasoning: String?,
     streaming: Boolean,
     showActions: Boolean,
+    showReport: Boolean,
     completedAt: Long?,
     onCopy: () -> Unit,
     onRedo: () -> Unit,
+    onReport: () -> Unit,
     copyText: String,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -828,22 +842,24 @@ private fun AssistantTurn(
             }
         }
 
-        AnimatedVisibility(visible = showActions, enter = fadeIn(PhoneTweens.popEnter), exit = fadeOut(PhoneTweens.popExit)) {
+        AnimatedVisibility(visible = showActions || showReport, enter = fadeIn(PhoneTweens.popEnter), exit = fadeOut(PhoneTweens.popExit)) {
             Row(Modifier.padding(top = 11.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                // Copy flips to a checkmark for ~1.8s - the standard confirmation (chatgpt-motion.md).
-                var copied by remember { mutableStateOf(false) }
-                LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1800); copied = false } }
-                AnimatedContent(
-                    targetState = copied,
-                    transitionSpec = { fadeIn(tween(140)) togetherWith fadeOut(tween(120)) },
-                    label = "copyCheck",
-                ) { isCopied ->
-                    ActionIcon(if (isCopied) Icons.Filled.Check else Icons.Filled.ContentCopy, "Copy") {
-                        clipboard.setText(AnnotatedString(copyText)); copied = true; onCopy()
+                if (showActions) {
+                    var copied by remember { mutableStateOf(false) }
+                    LaunchedEffect(copied) { if (copied) { kotlinx.coroutines.delay(1800); copied = false } }
+                    AnimatedContent(
+                        targetState = copied,
+                        transitionSpec = { fadeIn(tween(140)) togetherWith fadeOut(tween(120)) },
+                        label = "copyCheck",
+                    ) { isCopied ->
+                        ActionIcon(if (isCopied) Icons.Filled.Check else Icons.Filled.ContentCopy, "Copy") {
+                            clipboard.setText(AnnotatedString(copyText)); copied = true; onCopy()
+                        }
                     }
+                    ActionIcon(Icons.Filled.Refresh, "Redo", onRedo)
                 }
-                ActionIcon(Icons.Filled.Refresh, "Redo", onRedo)
-                if (completedAt != null) {
+                if (showReport) ActionIcon(Icons.Outlined.Flag, "Report AI response", onReport)
+                if (showActions && completedAt != null) {
                     Text(
                         STAMP.format(Date(completedAt)),
                         style = MaterialTheme.typography.labelSmall,
@@ -852,6 +868,200 @@ private fun AssistantTurn(
                     )
                 }
             }
+        }
+    }
+}
+
+private data class ReportCategory(val id: String, val title: String, val detail: String)
+
+private val REPORT_CATEGORIES = listOf(
+    ReportCategory("hate", "Hate", "Hateful or dehumanizing content"),
+    ReportCategory("harassment", "Harassment", "Bullying, threats, or targeted abuse"),
+    ReportCategory("sexual", "Sexual content", "Sexual or exploitative material"),
+    ReportCategory("violence", "Violence", "Violent threats or harmful instructions"),
+    ReportCategory("self_harm", "Self-harm", "Encouragement of self-harm"),
+    ReportCategory("illegal", "Illegal or malicious", "Scams, malware, or unauthorized access"),
+    ReportCategory("privacy", "Privacy", "Exposure of private or sensitive information"),
+    ReportCategory("other", "Other", "Another harmful or inappropriate response"),
+)
+
+@Composable
+private fun AiReportFlow(
+    onDismiss: () -> Unit,
+    onSubmit: suspend (String, String) -> AiReportSubmission,
+) {
+    var category by remember { mutableStateOf<String?>(null) }
+    var note by remember { mutableStateOf("") }
+    var submitting by remember { mutableStateOf(false) }
+    var sent by remember { mutableStateOf(false) }
+    var reference by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val backMotion = rememberPredictiveBackMotion(onBack = onDismiss)
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            Modifier.fillMaxSize().predictiveBackTransform(backMotion),
+            color = MaterialTheme.colorScheme.background,
+        ) {
+            if (sent) {
+                Column(
+                    Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(18.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Icon(Icons.Filled.Check, null, tint = MaterialTheme.colorScheme.onBackground, modifier = Modifier.size(36.dp))
+                    Spacer(Modifier.height(14.dp))
+                    Text("Report sent", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onBackground)
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Thank you. Your report will be used to improve PhoneCode's safeguards.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.secondary,
+                    )
+                    reference?.let {
+                        Spacer(Modifier.height(10.dp))
+                        Text("Reference: $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.tertiary)
+                    }
+                    Spacer(Modifier.height(20.dp))
+                    TextButton(onClick = onDismiss) { Text("Done") }
+                }
+            } else {
+                ReportReview(
+                    category = category,
+                    note = note,
+                    submitting = submitting,
+                    error = error,
+                    onCategory = { category = it; error = null },
+                    onNote = { note = it.take(1000); error = null },
+                    onDismiss = onDismiss,
+                    onSubmit = {
+                        val chosen = category ?: return@ReportReview
+                        submitting = true
+                        error = null
+                        scope.launch {
+                            val result = onSubmit(chosen, note)
+                            submitting = false
+                            if (result.accepted) {
+                                reference = result.reference
+                                sent = true
+                            } else {
+                                error = result.error
+                            }
+                        }
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReportReview(
+    category: String?,
+    note: String,
+    submitting: Boolean,
+    error: String?,
+    onCategory: (String) -> Unit,
+    onNote: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSubmit: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Column(
+        Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(horizontal = 18.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().height(Spacing.navBarHeight),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            PcIconButton(Icons.Filled.Close, "Cancel report", onClick = onDismiss)
+            Text(
+                "Report AI response",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = colors.onBackground,
+                modifier = Modifier.weight(1f).padding(horizontal = 8.dp),
+            )
+            TextButton(onClick = onSubmit, enabled = category != null && !submitting) {
+                Text(if (submitting) "Sending…" else "Send")
+            }
+        }
+        Column(
+            Modifier.fillMaxSize().contentVerticalScroll(rememberScrollState())
+                .padding(top = 20.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+        ) {
+            Text(
+                "Choose what went wrong. PhoneCode sends only this category, your optional note, and basic app information.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.secondary,
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Reason", style = MaterialTheme.typography.titleSmall, color = colors.onBackground)
+                REPORT_CATEGORIES.forEach { option ->
+                    ReportChoice(
+                        title = option.title,
+                        detail = option.detail,
+                        selected = category == option.id,
+                        onClick = { onCategory(option.id) },
+                    )
+                }
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("What happened? (optional)", style = MaterialTheme.typography.titleSmall, color = colors.onBackground)
+                BasicTextField(
+                    value = note,
+                    onValueChange = onNote,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = colors.onBackground),
+                    cursorBrush = SolidColor(colors.onBackground),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp).clip(MaterialTheme.shapes.medium)
+                        .background(colors.surfaceContainerLow).padding(14.dp),
+                    decorationBox = { field ->
+                        Box {
+                            if (note.isEmpty()) Text("Describe the problem without pasting private information.", color = colors.tertiary)
+                            field()
+                        }
+                    },
+                )
+                Text("${note.length}/1000", style = MaterialTheme.typography.labelSmall, color = colors.tertiary)
+            }
+            Text(
+                error ?: "The response, prompt, files, credentials, tool activity, chat history, and device identifiers are never attached.",
+                style = MaterialTheme.typography.labelMedium,
+                color = if (error != null) colors.error else colors.tertiary,
+            )
+        }
+    }
+}
+
+@Composable
+private fun ReportChoice(
+    title: String,
+    detail: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
+            .background(if (selected) colors.surfaceContainerHigh else colors.surfaceContainerLow)
+            .border(1.dp, if (selected) colors.onBackground else colors.outline, MaterialTheme.shapes.medium)
+            .clickable(onClick = onClick).padding(14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Box(
+            Modifier.size(22.dp).clip(ShapePill)
+                .border(1.5.dp, if (selected) colors.onBackground else colors.secondary, ShapePill),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (selected) Box(Modifier.size(12.dp).clip(ShapePill).background(colors.onBackground))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.labelLarge, color = colors.onBackground)
+            Text(detail, style = MaterialTheme.typography.bodySmall, color = colors.secondary)
         }
     }
 }
@@ -1185,7 +1395,8 @@ internal fun TodoPanel(todos: List<TodoItem>) {
         }
         if (expanded) {
             Column(
-                Modifier.elasticOverscroll().fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState(), overscrollEffect = null)
+                Modifier.fillMaxWidth().heightIn(max = 180.dp)
+                    .contentVerticalScroll(rememberScrollState())
                     .padding(start = 10.dp, end = 10.dp, bottom = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
@@ -1213,10 +1424,7 @@ private fun Composer(
     onRemovePhoto: () -> Unit,
     hazeState: HazeState,
     hazeStyle: HazeStyle,
-    menuExpanded: Boolean,
-    onMenuToggle: () -> Unit,
-    onMenuDismiss: () -> Unit,
-    menuContent: @Composable ColumnScope.() -> Unit,
+    onUpload: () -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
     sendOnEnter: Boolean,
@@ -1255,17 +1463,7 @@ private fun Composer(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                // ChatGPT-style: a bare + opens tools/attach; the capsule itself is the only container.
-                Box {
-                    PcIconButton(Icons.Filled.Add, "Tools", tint = colors.secondary, onClick = onMenuToggle)
-                    MorphingMenu(
-                        expanded = menuExpanded,
-                        onDismiss = onMenuDismiss,
-                        above = true,
-                        modifier = Modifier.width(320.dp),
-                        content = menuContent,
-                    )
-                }
+                PcIconButton(Icons.Outlined.AttachFile, "Attach photo or file", tint = colors.secondary, onClick = onUpload)
                 Box(Modifier.weight(1f).padding(horizontal = 4.dp)) {
                     if (input.isEmpty()) Text("Message...", style = MaterialTheme.typography.bodySmall, color = colors.secondary)
                     BasicTextField(
@@ -1288,8 +1486,8 @@ private fun Composer(
                 // (which queues the message) and an empty box shows Stop - so you can queue or stop.
                 AnimatedVisibility(
                     visible = input.isNotBlank() || photos.isNotEmpty() || state.isRunning,
-                    enter = scaleIn(initialScale = 0.6f, animationSpec = PhoneSprings.quickSpec()) + fadeIn(PhoneTweens.popEnter),
-                    exit = scaleOut(targetScale = 0.6f, animationSpec = PhoneSprings.quickSpec()) + fadeOut(PhoneTweens.popExit),
+                    enter = scaleIn(initialScale = 0.92f, animationSpec = PhoneSprings.quickSpec()) + fadeIn(PhoneTweens.popEnter),
+                    exit = scaleOut(targetScale = 0.92f, animationSpec = PhoneSprings.quickSpec()) + fadeOut(PhoneTweens.popExit),
                 ) {
                     AnimatedContent(
                         targetState = state.isRunning && input.isBlank(),
@@ -1387,31 +1585,6 @@ private fun readAttachment(context: android.content.Context, uri: Uri): Attachme
 }.getOrNull()
 
 @Composable
-private fun WrenchMenu(
-    state: ChatUiState,
-    vm: ChatViewModel,
-    onUpload: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val colors = MaterialTheme.colorScheme
-    Column(modifier.padding(6.dp)) {
-        Text(
-            "Add to chat",
-            style = MaterialTheme.typography.labelLarge,
-            color = colors.onBackground,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-        )
-        PopoverActionRow(Icons.Outlined.AttachFile, "Upload", "Photo or text file", onClick = onUpload)
-        PopoverActionRow(
-            Icons.Outlined.Checklist,
-            "Mode",
-            if (state.agentMode == AgentMode.PLAN) "Plan" else "Build",
-            onClick = { vm.setAgentMode(if (state.agentMode == AgentMode.PLAN) AgentMode.BUILD else AgentMode.PLAN) },
-        )
-    }
-}
-
-@Composable
 private fun ModelSheet(state: ChatUiState, vm: ChatViewModel, onDone: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     var query by remember { mutableStateOf("") }
@@ -1430,6 +1603,34 @@ private fun ModelSheet(state: ChatUiState, vm: ChatViewModel, onDone: () -> Unit
             )
         }
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("Agent mode", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
+                Text(
+                    if (state.agentMode == AgentMode.PLAN) "Plan" else "Build",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = colors.onBackground,
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 14.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AgentMode.entries.forEach { mode ->
+                    val selected = state.agentMode == mode
+                    Box(
+                        Modifier.weight(1f).height(40.dp).clip(ShapePill)
+                            .background(if (selected) colors.primary else colors.surfaceContainerHigh)
+                            .clickable { vm.setAgentMode(mode) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            mode.name.lowercase().replaceFirstChar { it.uppercase() },
+                            style = MaterialTheme.typography.labelLarge,
+                            color = if (selected) colors.onPrimary else colors.onBackground,
+                        )
+                    }
+                }
+            }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("Reasoning", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, modifier = Modifier.weight(1f))
                 Text(
@@ -1478,7 +1679,10 @@ private fun ModelSheet(state: ChatUiState, vm: ChatViewModel, onDone: () -> Unit
                 )
             }
         }
-        Column(Modifier.elasticOverscroll().heightIn(max = 480.dp).padding(horizontal = 6.dp, vertical = 4.dp).verticalScroll(rememberScrollState(), overscrollEffect = null)) {
+        Column(
+            Modifier.heightIn(max = 480.dp).padding(horizontal = 6.dp, vertical = 4.dp)
+                .contentVerticalScroll(rememberScrollState()),
+        ) {
             fun key(o: ModelOption) = "${o.providerId}/${o.modelId}"
             // Respect provider management: disabled providers and hidden models stay out of the picker.
             val visible = state.models.filter {
@@ -1556,31 +1760,6 @@ private fun ModelRow(option: ModelOption, selected: Boolean, isFav: Boolean, onS
                 tint = if (isFav) colors.onBackground else colors.tertiary,
                 modifier = Modifier.size(18.dp),
             )
-        }
-    }
-}
-
-@Composable
-private fun PopoverActionRow(
-    icon: ImageVector,
-    label: String,
-    detail: String,
-    onClick: (() -> Unit)?,
-) {
-    val colors = MaterialTheme.colorScheme
-    val interaction = remember { MutableInteractionSource() }
-    Row(
-        Modifier.fillMaxWidth().then(if (onClick != null) Modifier.pressFeedback(interaction, pressedScale = 0.98f) else Modifier)
-            .clip(MaterialTheme.shapes.medium)
-            .then(if (onClick != null) Modifier.clickable(interactionSource = interaction, indication = ripple(), onClick = onClick) else Modifier)
-            .heightIn(min = 56.dp).padding(horizontal = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(11.dp),
-    ) {
-        Icon(icon, null, tint = if (onClick == null) colors.tertiary else colors.secondary, modifier = Modifier.size(20.dp))
-        Column(Modifier.weight(1f)) {
-            Text(label, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium), color = colors.onBackground)
-            Text(detail, style = MaterialTheme.typography.labelMedium, color = colors.tertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -1731,7 +1910,8 @@ private fun QuestionDialog(request: QuestionRequest, onSubmit: (List<UserAnswer>
         ) { index ->
             val item = request.questions[index]
             Column(
-                Modifier.elasticOverscroll().padding(top = 12.dp).heightIn(max = 420.dp).verticalScroll(rememberScrollState(), overscrollEffect = null),
+                Modifier.padding(top = 12.dp).heightIn(max = 420.dp)
+                    .contentVerticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(item.question, style = MaterialTheme.typography.titleMedium, color = colors.onBackground)

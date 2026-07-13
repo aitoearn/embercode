@@ -1,7 +1,11 @@
 package dev.phonecode.tools.shell
 
 import dev.phonecode.tools.ToolContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -12,6 +16,8 @@ import org.junit.Assume.assumeFalse
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 class ShellToolTest {
 
@@ -57,6 +63,32 @@ class ShellToolTest {
     @Test fun missingCommandIsAnError() = runBlocking {
         val result = ShellTool({ hostShell() }).execute(buildJsonObject { }, context)
         assertTrue(result.isError)
+    }
+
+    @Test fun refusesToUseAHostShellWhenAlpineIsUnavailable() = runBlocking {
+        val result = ShellTool().execute(args("echo unsafe"), context)
+
+        assertTrue(result.isError)
+        assertEquals("bash: bundled Alpine environment is not ready", result.output)
+    }
+
+    @Test fun cancellationStopsTheForegroundProcess() = runBlocking {
+        assumeFalse(System.getProperty("os.name").lowercase().contains("win"))
+        val pidFile = File(tmp.root, "foreground.pid")
+        val running = async {
+            ShellTool({ hostShell() }).execute(args("echo \$\$ > foreground.pid; exec sleep 30"), context)
+        }
+        withTimeout(5_000) {
+            while (!pidFile.isFile) delay(20)
+        }
+        val pid = pidFile.readText().trim().toLong()
+
+        running.cancelAndJoin()
+
+        withTimeout(5_000) {
+            while (ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false)) delay(20)
+        }
+        assertFalse(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false))
     }
 
     @Test fun injectedEnvironmentReachesTheProcess() = runBlocking {
@@ -112,5 +144,75 @@ class ShellToolTest {
         }
         assertTrue(manager.output(id).output, manager.output(id).output.contains("received:hello"))
         assertFalse(manager.stop(id).isError)
+    }
+
+    @Test fun reportsProcessesInterruptedByAppDeath() = runBlocking {
+        assumeFalse(System.getProperty("os.name").lowercase().contains("win"))
+        val storage = tmp.newFolder("process-records")
+        val manager = ProcessManager({ hostShell() }, storageDirectory = storage)
+        val started = manager.start("printf ready; exec sleep 30", context.workspacePath)
+        val id = Regex("proc-\\d+").find(started.output)!!.value
+
+        val restored = ProcessManager({ hostShell() }, storageDirectory = storage)
+
+        assertTrue(restored.output(id).output, restored.output(id).output.contains("interrupted"))
+        assertTrue(restored.output(id).output, restored.output(id).output.contains("ready"))
+        assertFalse(manager.stop(id).isError)
+    }
+
+    @Test fun stopAllStopsEveryRunningProcess() = runBlocking {
+        assumeFalse(System.getProperty("os.name").lowercase().contains("win"))
+        val stopped = mutableListOf<String>()
+        val manager = ProcessManager({ hostShell() }, onStopped = stopped::add)
+        val first = manager.start("exec sleep 30", context.workspacePath)
+        val second = manager.start("exec sleep 30", context.workspacePath)
+        val ids = listOf(first, second).map { Regex("proc-\\d+").find(it.output)!!.value }
+
+        manager.stopAll()
+
+        assertTrue(ids.all { manager.output(it).output.contains("stopped") })
+        assertEquals(ids.toSet(), stopped.toSet())
+    }
+
+    @Test fun persistenceFailureDoesNotStartAnUnmanagedProcess() = runBlocking {
+        assumeFalse(System.getProperty("os.name").lowercase().contains("win"))
+        val starts = AtomicInteger()
+        val stops = AtomicInteger()
+        val manager = ProcessManager(
+            shellProvider = { hostShell() },
+            onStarted = { starts.incrementAndGet() },
+            onStopped = { stops.incrementAndGet() },
+            storageDirectory = tmp.newFile("not-a-directory"),
+        )
+
+        val started = manager.start("exec sleep 30", context.workspacePath)
+
+        assertTrue(started.isError)
+        assertTrue(started.output.contains("could not be saved"))
+        assertEquals(0, starts.get())
+        assertEquals(0, stops.get())
+        assertEquals("No managed background processes.", manager.list().output)
+    }
+
+    @Test fun serviceStartFailureDoesNotOrphanTheProcess() = runBlocking {
+        assumeFalse(System.getProperty("os.name").lowercase().contains("win"))
+        val pidFile = File(tmp.root, "failed-start.pid")
+        val manager = ProcessManager(
+            shellProvider = { hostShell() },
+            onStarted = {
+                repeat(250) {
+                    if (pidFile.isFile) return@repeat
+                    Thread.sleep(20)
+                }
+                error("service unavailable")
+            },
+        )
+
+        val result = manager.start("echo \$\$ > failed-start.pid; exec sleep 30", context.workspacePath)
+        val pid = pidFile.readText().trim().toLong()
+
+        assertTrue(result.isError)
+        assertFalse(ProcessHandle.of(pid).map(ProcessHandle::isAlive).orElse(false))
+        assertEquals("No managed background processes.", manager.list().output)
     }
 }

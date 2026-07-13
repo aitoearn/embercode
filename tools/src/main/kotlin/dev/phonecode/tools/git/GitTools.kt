@@ -17,10 +17,14 @@ import org.eclipse.jgit.api.Git
 import org.eclipse.jgit.api.Status
 import org.eclipse.jgit.dircache.DirCacheIterator
 import org.eclipse.jgit.diff.DiffFormatter
+import org.eclipse.jgit.transport.RemoteRefUpdate
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider
+import org.eclipse.jgit.transport.URIish
+import org.eclipse.jgit.storage.file.FileRepositoryBuilder
 import org.eclipse.jgit.treewalk.FileTreeIterator
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.nio.file.Files
 
 /** Native git via JGit, confined to the workspace. push/pull use [credentials] = (username, token) over HTTPS. */
 fun gitTools(credentials: suspend () -> Pair<String, String>?): List<Tool> = listOf(
@@ -30,12 +34,50 @@ fun gitTools(credentials: suspend () -> Pair<String, String>?): List<Tool> = lis
 
 private val NO_PARAMS = objectSchema(emptyMap(), emptyList())
 
+fun openGit(workspace: File): Git {
+    val root = workspace.canonicalFile
+    return Git(
+        FileRepositoryBuilder()
+            .setWorkTree(root)
+            .setGitDir(gitDirectory(root))
+            .setFS(NoExecFs())
+            .setMustExist(true)
+            .build(),
+    )
+}
+
+private fun gitDirectory(workspace: File): File {
+    require(workspace.isDirectory) { "workspace is not a directory" }
+    val git = File(workspace, ".git")
+    require(!Files.isSymbolicLink(git.toPath())) { ".git cannot be a symbolic link" }
+    require(git.canonicalPath.startsWith(workspace.canonicalPath + File.separator)) { ".git is outside the workspace" }
+    return git
+}
+
 /** Open the workspace repo and run [block]; a friendly error if it isn't a repo. */
 private suspend fun withRepo(context: ToolContext, name: String, block: (Git) -> String): ToolResult =
     withContext(Dispatchers.IO) {
-        runCatching { Git.open(File(context.workspacePath)).use { ToolResult(block(it)) } }
+        runCatching { openGit(File(context.workspacePath)).use { ToolResult(block(it)) } }
             .getOrElse { ToolResult("$name: ${it.message ?: "not a git repository (try git_init)"}", isError = true) }
     }
+
+private fun requireHttpsOrigin(git: Git, push: Boolean = false): List<URIish> {
+    val config = git.repository.config
+    val fetchUrls = config.getStringList("remote", "origin", "url")
+    val pushUrls = config.getStringList("remote", "origin", "pushurl")
+    val urls = if (push && pushUrls.isNotEmpty()) pushUrls else fetchUrls
+    require(urls.isNotEmpty()) { "origin has no URL" }
+    val origins = urls.map(::URIish)
+    require(origins.all { it.scheme.equals("https", true) && !it.host.isNullOrBlank() }) {
+        "origin must use HTTPS"
+    }
+    return origins
+}
+
+private fun URIish.isGitHub(): Boolean = host.equals("github.com", true)
+
+internal fun successfulPushStatus(status: RemoteRefUpdate.Status): Boolean =
+    status == RemoteRefUpdate.Status.OK || status == RemoteRefUpdate.Status.UP_TO_DATE
 
 private fun Status.render(): String {
     val sb = StringBuilder()
@@ -54,7 +96,12 @@ class GitInitTool : Tool {
     override val promptSnippet = "initialize a git repository in the workspace"
     override val parameters = NO_PARAMS
     override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult = withContext(Dispatchers.IO) {
-        runCatching { Git.init().setDirectory(File(context.workspacePath)).call().use {} ; ToolResult("git: initialized repository") }
+        runCatching {
+            val workspace = File(context.workspacePath).canonicalFile
+            gitDirectory(workspace)
+            Git.init().setDirectory(workspace).setFs(NoExecFs()).call().use {}
+            ToolResult("git: initialized repository")
+        }
             .getOrElse { ToolResult("git_init: ${it.message}", isError = true) }
     }
 }
@@ -130,7 +177,7 @@ class GitCommitTool : Tool {
         val author = args.str("author")?.takeIf { it.isNotBlank() } ?: "PhoneCode"
         val email = args.str("email")?.takeIf { it.isNotBlank() } ?: "agent@phonecode.dev"
         return withRepo(context, name) { git ->
-            val commit = git.commit().setMessage(message).setAuthor(author, email).call()
+            val commit = git.commit().setMessage(message).setAuthor(author, email).setNoVerify(true).call()
             "committed ${commit.name.take(8)}: ${commit.shortMessage}"
         }
     }
@@ -202,7 +249,14 @@ class GitPushTool(private val credentials: suspend () -> Pair<String, String>?) 
     override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult {
         val creds = credentials() ?: return ToolResult("git_push: no git credentials set (add a username + token in Settings)", isError = true)
         return withRepo(context, name) { git ->
-            git.push().setCredentialsProvider(UsernamePasswordCredentialsProvider(creds.first, creds.second)).call()
+            require(requireHttpsOrigin(git, push = true).all(URIish::isGitHub)) { "origin must use GitHub HTTPS" }
+            val failures = git.push().setRemote("origin")
+                .setCredentialsProvider(UsernamePasswordCredentialsProvider(creds.first, creds.second)).call()
+                .flatMap { it.remoteUpdates }
+                .filterNot { successfulPushStatus(it.status) }
+            require(failures.isEmpty()) {
+                "push rejected: ${failures.joinToString { "${it.remoteName} ${it.status}" }}"
+            }
             "pushed to origin"
         }
     }
@@ -217,8 +271,11 @@ class GitPullTool(private val credentials: suspend () -> Pair<String, String>?) 
     override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult {
         val creds = credentials()
         return withRepo(context, name) { git ->
-            val pull = git.pull()
-            if (creds != null) pull.setCredentialsProvider(UsernamePasswordCredentialsProvider(creds.first, creds.second))
+            val origins = requireHttpsOrigin(git)
+            val pull = git.pull().setRemote("origin")
+            if (creds != null && origins.all(URIish::isGitHub)) {
+                pull.setCredentialsProvider(UsernamePasswordCredentialsProvider(creds.first, creds.second))
+            }
             val result = pull.call()
             if (result.isSuccessful) "pulled from origin" else "pull completed with conflicts"
         }

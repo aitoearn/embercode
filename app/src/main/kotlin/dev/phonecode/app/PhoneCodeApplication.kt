@@ -1,19 +1,25 @@
 package dev.phonecode.app
 
 import android.app.Application
+import android.os.Process
 import dev.phonecode.app.agent.ChatViewModel
 import dev.phonecode.app.agent.TurnService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import java.io.File
 
 class PhoneCodeApplication : Application() {
-    val foregroundLeases = ForegroundLeaseManager(
-        start = { TurnService.start(this) },
-        stop = { TurnService.stop(this) },
-    )
-    val chatViewModel by lazy { ChatViewModel(this) }
+    val foregroundLeases by lazy {
+        requireMainUid()
+        ForegroundLeaseManager(
+            start = { TurnService.start(this) },
+            stop = { TurnService.stop(this) },
+        )
+    }
+    val chatViewModel by lazy {
+        requireMainUid()
+        ChatViewModel(this)
+    }
 
     /**
      * Scope for in-flight agent TURNS. Deliberately application-level: a turn launched in
@@ -23,10 +29,12 @@ class PhoneCodeApplication : Application() {
      * completion, and the reopened UI restores the finished reply. ChatViewModel.cancel()
      * cancels the individual job; the scope itself lives as long as the process.
      */
-    val turnScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val turnScope by lazy {
+        requireMainUid()
+        CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    }
 
-    override fun onCreate() {
-        super.onCreate()
-        File(filesDir, "crash.log").delete()
+    private fun requireMainUid() {
+        check(Process.myUid() == applicationInfo.uid)
     }
 }

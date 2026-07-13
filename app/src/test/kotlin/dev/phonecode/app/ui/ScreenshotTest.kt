@@ -145,19 +145,10 @@ class ScreenshotTest {
         captureScreenRoboImage("screenshots/$name.png")
     }
 
-    private fun dismissToolsMenu() {
-        compose.onNodeWithText("Upload").performClick()
-        compose.waitForIdle()
-    }
-
     @Test
     fun chatScreens() {
         awaitConversation()
         shoot("01-chat-conversation")
-
-        compose.onNodeWithContentDescription("Tools").performClick()
-        shootScreen("02-tools-menu")
-        dismissToolsMenu()
 
         compose.onNodeWithText("Claude Opus 4.8").performClick()
         shootScreen("03-model-picker")
@@ -165,6 +156,7 @@ class ScreenshotTest {
         compose.onAllNodesWithText("Done").onFirst().performClick()
         compose.waitForIdle()
 
+        compose.onNodeWithContentDescription("Menu").performClick()
         compose.onNodeWithContentDescription("New chat").performClick()
         shoot("06-chat-empty")
     }
@@ -189,9 +181,6 @@ class ScreenshotTest {
     fun darkChat() {
         awaitConversation()
         shoot("11-chat-conversation-dark")
-        compose.onNodeWithContentDescription("Tools").performClick()
-        shootScreen("14-tools-menu-dark")
-        dismissToolsMenu()
         compose.onNodeWithContentDescription("Menu").performClick()
         shoot("12-drawer-dark")
     }

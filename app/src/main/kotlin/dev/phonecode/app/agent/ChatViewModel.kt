@@ -11,7 +11,6 @@ import dev.phonecode.agent.AgentLoop
 import dev.phonecode.agent.AgentMode
 import dev.phonecode.agent.MessageSource
 import dev.phonecode.agent.PlanExitTool
-import dev.phonecode.agent.SkillInfo
 import dev.phonecode.agent.TaskTool
 import dev.phonecode.agent.TurnSettings
 import dev.phonecode.app.auth.CodexAuth
@@ -21,6 +20,8 @@ import dev.phonecode.app.data.AppSettingsStore
 import dev.phonecode.app.data.CustomProviderRepository
 import dev.phonecode.app.data.FileCatalogCache
 import dev.phonecode.app.data.McpSkillRepository
+import dev.phonecode.app.data.ManagedSkill
+import dev.phonecode.app.data.McpConfigLoad
 import dev.phonecode.app.data.ModelPrefsStore
 import dev.phonecode.app.data.PersistedSession
 import dev.phonecode.app.data.Project
@@ -56,11 +57,13 @@ import dev.phonecode.tools.UserQuestion
 import dev.phonecode.tools.external.ExternalDirectoryTool
 import dev.phonecode.tools.files.defaultFileTools
 import dev.phonecode.tools.git.gitTools
+import dev.phonecode.tools.git.openGit
 import dev.phonecode.tools.interaction.QuestionTool
 import dev.phonecode.tools.patch.ApplyPatchTool
-import dev.phonecode.tools.mcp.McpConfig
+import dev.phonecode.tools.mcp.McpServerSnapshot
 import dev.phonecode.tools.mcp.McpServerConfig
-import dev.phonecode.tools.mcp.connectMcpServers
+import dev.phonecode.tools.mcp.connectMcpServersDetailed
+import dev.phonecode.tools.mcp.probeMcpServer
 import dev.phonecode.tools.skills.SkillManifest
 import dev.phonecode.tools.skills.SkillTool
 import dev.phonecode.tools.shared.SharedReadTool
@@ -81,8 +84,19 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
@@ -96,6 +110,7 @@ data class PermissionRequest(val tool: String, val summary: String)
 
 data class QuestionRequest(val questions: List<UserQuestion>)
 data class RetryState(val attempt: Int, val message: String)
+data class AiReportSubmission(val accepted: Boolean, val reference: String? = null, val error: String? = null)
 
 sealed interface ChatLine {
     data class User(val text: String, val images: List<MessagePart.Image> = emptyList()) : ChatLine
@@ -120,8 +135,11 @@ data class ChatUiState(
     val retry: RetryState? = null,
     val todos: List<TodoItem> = emptyList(),
     val mcpServers: Map<String, McpServerConfig> = emptyMap(),
+    val mcpSnapshots: Map<String, McpServerSnapshot> = emptyMap(),
     val mcpToolCount: Int = 0,
-    val skills: List<SkillInfo> = emptyList(),
+    val mcpConnecting: Set<String> = emptySet(),
+    val mcpConfigError: String? = null,
+    val skills: List<ManagedSkill> = emptyList(),
     val sessions: List<SessionMeta> = emptyList(),
     // Bumped whenever `lines` is REWOUND (redo) - the chat list keys its index-cache remembers
     // on this so truncation doesn't leak stale animation/identity state (index keys are otherwise
@@ -165,18 +183,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // [workspace]). Set at send() start, cleared when that turn finishes.
     @Volatile private var turnWorkspace: File? = null
     private val keyStore = SecureKeyStore(app)
-    // The agent's POSIX userland (busybox shell + applet symlinks + HOME/TMPDIR/PREFIX env) -
-    // bootstrapped once per app version, lazily so construction never touches the filesystem.
     private val userland by lazy { EnvironmentBootstrap.ensure(app) }
     private val http = OkHttpClient.Builder()
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build()
+    private val reportHttp = http.newBuilder()
+        .callTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
     private val foregroundLeases = (app as PhoneCodeApplication).foregroundLeases
     private val turnLease = AtomicReference<String?>(null)
-    private val authLease = AtomicReference<String?>(null)
-    private val githubAuthLease = AtomicReference<String?>(null)
     private val todoStore = TodoStore()
     private val configDir = File(app.filesDir, "config")
     private val repo = McpSkillRepository(configDir)
@@ -191,23 +209,20 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val processManager = ProcessManager(
         shellProvider = shellProvider,
         environmentProvider = shellEnvironment,
-        onStarted = { foregroundLeases.acquire("process-$it") },
-        onStopped = { foregroundLeases.release("process-$it") },
+        onStarted = { foregroundLeases.acquire("process:$it") },
+        onStopped = { foregroundLeases.release("process:$it") },
+        storageDirectory = File(app.filesDir, "processes"),
     )
     private val baseTools: List<Tool> =
         defaultFileTools() + ApplyPatchTool() + ExternalDirectoryTool() + QuestionTool() +
             SharedReadTool(sharedFileAccess) + SharedWriteTool(sharedFileAccess) +
             PlanExitTool { setAgentMode(AgentMode.BUILD) } + todoTools(todoStore) +
             WebFetchTool(http) + WebSearchTool(http) + TaskTool(::runSubagent) + gitTools { gitCredentials() } +
-            // Real terminal access: busybox userland over Android's toybox, transparently upgrading to a
-            // full Alpine Linux (proot) once its rootfs is set up - sandbox-scoped, permission-gated like
-            // every mutating tool. Providers are dynamic: shell()/shellEnv() re-resolve each call so the
-            // shell flips from busybox to Linux the moment the background rootfs setup finishes.
-            ShellTool(shellProvider, shellEnvironment, processManager) + ProcessTool(processManager)
+            ShellTool(shellProvider, shellEnvironment, processManager) + ProcessTool(processManager) +
+            ExtensionConfigReadTool(repo) { workspace } + ExtensionConfigWriteTool(repo) { workspace }
     @Volatile private var mcpTools: List<Tool> = emptyList()
     @Volatile private var discoveredSkills: List<SkillManifest> = emptyList()
-    // Registry is replaced wholesale (not mutated) so send()/runSubagent always read a consistent snapshot.
-    @Volatile private var tools = ToolRegistry(baseTools)
+    private val tools = ToolRegistry(baseTools)
     // MUST be initialized before the init block below: the MCP-connect coroutine it launches calls
     // rebuildTools() and can run before a later-declared field's initializer executes (NPE at launch).
     private val toolsLock = Any()
@@ -260,6 +275,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     @Volatile private var generation = 0
     private var job: Job? = null
     private var modelRefreshJob: Job? = null
+    private var mcpReconnectJob: Job? = null
+    private val runtimeReloadMutex = Mutex()
+    private val mcpReloadMutex = Mutex()
+    @Volatile private var lastMcpFingerprint: String? = null
+    @Volatile private var lastSkillsFingerprint: String? = null
+    private val configHotReload = ConfigHotReloadObserver(
+        scope = viewModelScope,
+        directories = { repo.watchedDirectories(workspace) },
+        onChange = { refreshRuntimeConfiguration() },
+    )
     @Volatile private var lastCatalogRefreshAt = 0L
     @Volatile private var lastCodexRefreshAt = 0L
     private var pendingDecision: CompletableDeferred<Boolean>? = null
@@ -271,10 +296,10 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private val queueSource = MessageSource { generateSequence { pendingMessages.poll() }.toList() }
 
     init {
+        configDir.mkdirs()
         refreshSessions()
-        // Prewarm the userland bootstrap (symlink install + bundled Alpine rootfs extract) off the main
-        // thread, so the Linux env is ready before the agent's first shell call instead of the model
-        // hitting a "provisioning" window and improvising.
+        foregroundLeases.registerStopHandler("processes", processManager::stopAll)
+        foregroundLeases.registerStopHandler("turn") { cancel() }
         viewModelScope.launch(Dispatchers.IO) { userland.ensureLinux() }
         viewModelScope.launch(Dispatchers.IO) {
             val saved = appSettings.load()
@@ -325,20 +350,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         }
         // Load MCP config + discover skills, then connect remote MCP servers and fold their tools in.
         viewModelScope.launch(Dispatchers.IO) {
-            val config = repo.loadMcpConfig()
             repo.seedBundledSkills(app.assets) // built-in skills (e.g. diagrams) on first run; user can edit/delete after
-            discoveredSkills = repo.discoverSkills()
-            val connected = runCatching { connectMcpServers(config, http) }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it else emptyList() }
-            mcpTools = connected
-            rebuildTools()
-            _state.update {
-                it.copy(
-                    mcpServers = config.mcp,
-                    mcpToolCount = connected.size,
-                    skills = discoveredSkills.map { s -> SkillInfo(s.name, s.description) },
-                )
-            }
+            refreshSkillsNow()
+            reconnectMcpNow(force = true)
+            configHotReload.restart()
         }
+        configHotReload.start()
         refreshModels()
     }
 
@@ -448,6 +465,9 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     private fun setActiveProject(projectId: String?) {
         currentProjectId = projectId
         workspace = workspaceFor(projectId)
+        lastSkillsFingerprint = null
+        configHotReload.restart()
+        refreshSkills()
     }
 
     /**
@@ -459,7 +479,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         if (!appSettings.load().gitAutoBranch) return
         if (!File(dir, ".git").exists()) return
         runCatching {
-            org.eclipse.jgit.api.Git.open(dir).use { git ->
+            openGit(dir).use { git ->
                 val branch = "task-" + taskSessionId.removePrefix("session-")
                 if (git.repository.branch != branch) {
                     git.checkout().setName(branch).setCreateBranch(true).call()
@@ -784,41 +804,150 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun saveMcpServer(name: String, server: McpServerConfig) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
-        val updated = McpConfig(repo.loadMcpConfig().mcp + (trimmed to server))
-        repo.saveMcpConfig(updated)
-        _state.update { it.copy(mcpServers = updated.mcp) }
-        reconnectMcp()
+        val original = trimmed.takeIf { it in _state.value.mcpServers }
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.upsertMcpServer(original, trimmed, server).fold(
+                onSuccess = { updated ->
+                    _state.update { it.copy(mcpServers = updated.mcp, mcpConfigError = null) }
+                    reconnectMcp()
+                },
+                onFailure = { failure ->
+                    _state.update { it.copy(mcpConfigError = failure.message ?: "MCP configuration could not be saved") }
+                },
+            )
+        }
+    }
+
+    suspend fun saveMcpServerAndWait(name: String, server: McpServerConfig): Result<Unit> = withContext(Dispatchers.IO) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return@withContext Result.failure(IllegalArgumentException("Server name is required"))
+        val original = trimmed.takeIf { it in _state.value.mcpServers }
+        repo.upsertMcpServer(original, trimmed, server).fold(
+            onSuccess = { updated ->
+                _state.update { it.copy(mcpServers = updated.mcp, mcpConfigError = null) }
+                reconnectMcpNow(force = true)
+                Result.success(Unit)
+            },
+            onFailure = { failure ->
+                _state.update { it.copy(mcpConfigError = failure.message ?: "MCP configuration could not be saved") }
+                Result.failure(failure)
+            },
+        )
     }
 
     fun deleteMcpServer(name: String) {
-        val updated = McpConfig(repo.loadMcpConfig().mcp - name)
-        repo.saveMcpConfig(updated)
-        _state.update { it.copy(mcpServers = updated.mcp) }
-        reconnectMcp()
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.removeMcpServer(name).fold(
+                onSuccess = { updated ->
+                    _state.update { it.copy(mcpServers = updated.mcp, mcpConfigError = null) }
+                    reconnectMcp()
+                },
+                onFailure = { failure ->
+                    _state.update { it.copy(mcpConfigError = failure.message ?: "MCP server could not be deleted") }
+                },
+            )
+        }
     }
 
     fun setMcpEnabled(name: String, enabled: Boolean) {
-        val current = repo.loadMcpConfig().mcp[name] ?: return
-        saveMcpServer(name, current.copy(enabled = enabled))
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.setMcpEnabled(name, enabled).fold(
+                onSuccess = { updated ->
+                    _state.update { it.copy(mcpServers = updated.mcp, mcpConfigError = null) }
+                    reconnectMcp()
+                },
+                onFailure = { failure ->
+                    _state.update { it.copy(mcpConfigError = failure.message ?: "MCP server could not be updated") }
+                },
+            )
+        }
     }
 
     /** Reconnect every enabled remote MCP server and fold the resulting tools into the registry. */
     fun reconnectMcp() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val config = repo.loadMcpConfig()
-            val connected = runCatching { connectMcpServers(config, http) }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it else emptyList() }
-            mcpTools = connected
-            rebuildTools()
-            _state.update { it.copy(mcpServers = config.mcp, mcpToolCount = connected.size) }
+        mcpReconnectJob?.cancel()
+        mcpReconnectJob = viewModelScope.launch(Dispatchers.IO) {
+            reconnectMcpNow(force = true)
         }
     }
+
+    private suspend fun reconnectMcpNow(force: Boolean = false) = mcpReloadMutex.withLock {
+        val fingerprint = repo.runtimeFingerprint(workspace).mcp
+        if (!force && fingerprint == lastMcpFingerprint) return@withLock
+        val loaded = repo.loadMcpConfigState()
+        if (loaded is McpConfigLoad.Invalid) {
+            lastMcpFingerprint = fingerprint
+            _state.update { it.copy(mcpConnecting = emptySet(), mcpConfigError = loaded.message) }
+            return@withLock
+        }
+        val config = (loaded as McpConfigLoad.Ready).config
+        _state.update {
+            it.copy(
+                mcpServers = config.mcp,
+                mcpConnecting = config.mcp.filterValues { server -> server.enabled }.keys,
+                mcpConfigError = null,
+            )
+        }
+        val connected = runCatching { connectMcpServersDetailed(config, http) }.getOrElse {
+            if (it is kotlinx.coroutines.CancellationException) throw it
+            dev.phonecode.tools.mcp.McpConnectionResult(emptyList(), emptyMap())
+        }
+        kotlinx.coroutines.yield()
+        mcpTools = connected.tools
+        rebuildTools()
+        lastMcpFingerprint = fingerprint
+        _state.update {
+            it.copy(
+                mcpServers = config.mcp,
+                mcpSnapshots = connected.snapshots,
+                mcpToolCount = connected.tools.size,
+                mcpConnecting = emptySet(),
+                mcpConfigError = null,
+            )
+        }
+    }
+
+    suspend fun testMcpServer(name: String, server: McpServerConfig): McpServerSnapshot =
+        probeMcpServer(name.ifBlank { "MCP server" }, server, http)
 
     /** Re-scan the config dir for SKILL.md files and refresh the skill tool + prompt. */
     fun refreshSkills() {
         viewModelScope.launch(Dispatchers.IO) {
-            discoveredSkills = repo.discoverSkills()
-            rebuildTools()
-            _state.update { it.copy(skills = discoveredSkills.map { s -> SkillInfo(s.name, s.description) }) }
+            refreshSkillsNow()
+        }
+    }
+
+    fun setSkillEnabled(id: String, enabled: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.setSkillEnabled(id, enabled, workspace).fold(
+                onSuccess = { refreshSkillsNow() },
+                onFailure = { failure -> _state.update { it.copy(error = failure.message ?: "Skill could not be updated") } },
+            )
+        }
+    }
+
+    fun deleteSkill(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            repo.deleteSkill(id, workspace).fold(
+                onSuccess = { refreshSkillsNow() },
+                onFailure = { failure -> _state.update { it.copy(error = failure.message ?: "Skill could not be deleted") } },
+            )
+        }
+    }
+
+    private fun refreshSkillsNow() {
+        val inventory = repo.scanSkills(workspace)
+        discoveredSkills = inventory.active
+        rebuildTools()
+        lastSkillsFingerprint = repo.runtimeFingerprint(workspace).skills
+        _state.update { it.copy(skills = inventory.items) }
+    }
+
+    private suspend fun refreshRuntimeConfiguration() = runtimeReloadMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val fingerprint = repo.runtimeFingerprint(workspace)
+            if (fingerprint.skills != lastSkillsFingerprint) refreshSkillsNow()
+            if (fingerprint.mcp != lastMcpFingerprint) reconnectMcpNow()
         }
     }
 
@@ -826,7 +955,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     // two interleaved read-modify-writes could drop the just-connected MCP tools (a lost update).
     private fun rebuildTools() = synchronized(toolsLock) {
         val skillTool = if (discoveredSkills.isNotEmpty()) listOf(SkillTool(discoveredSkills)) else emptyList()
-        tools = ToolRegistry(baseTools + mcpTools + skillTool)
+        tools.replace(baseTools + mcpTools + skillTool)
+    }
+
+    private fun mcpInstructions(): List<String> = _state.value.mcpSnapshots.mapNotNull { (name, snapshot) ->
+        snapshot.instructions.trim().takeIf { snapshot.connected && it.isNotEmpty() }
+            ?.take(512)?.let { "$name:\n$it" }
     }
     fun configDirPath(): String = configDir.absolutePath
     fun keyFor(providerId: String): String = keyStore.get(providerId).orEmpty()
@@ -840,11 +974,46 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearNotice() = _state.update { it.copy(notice = null) }
 
+    suspend fun submitAiReport(category: String, note: String): AiReportSubmission = withContext(Dispatchers.IO) {
+        val body = aiReportPayload(
+            category = category,
+            note = note,
+            appVersion = getApplication<Application>().packageManager
+                .getPackageInfo(getApplication<Application>().packageName, 0)
+                .versionName ?: "unknown",
+        ).toRequestBody("application/json; charset=utf-8".toMediaType())
+        val request = Request.Builder()
+            .url("https://dttdrv.xyz/api/phonecode/report")
+            .post(body)
+            .build()
+        runCatching {
+            reportHttp.newCall(request).execute().use { response ->
+                when (response.code) {
+                    202 -> AiReportSubmission(
+                        accepted = true,
+                        reference = runCatching {
+                            Json.parseToJsonElement(response.body?.string().orEmpty())
+                                .jsonObject["id"]?.jsonPrimitive?.contentOrNull
+                        }.getOrNull(),
+                    )
+                    429 -> AiReportSubmission(false, error = "Too many reports were sent from this network. Try again later.")
+                    else -> AiReportSubmission(false, error = "Reporting is temporarily unavailable. Try again later.")
+                }
+            }
+        }.getOrElse {
+            AiReportSubmission(false, error = "Reporting is temporarily unavailable. Check your connection and try again.")
+        }
+    }
+
     // ----- Codex (Sign in with ChatGPT) -----
 
     private fun beginLease(slot: AtomicReference<String?>, prefix: String): String {
         val id = "$prefix-${UUID.randomUUID()}"
-        foregroundLeases.acquire(id)
+        runCatching { foregroundLeases.acquire(id) }.onFailure { error ->
+            _state.update {
+                it.copy(notice = "Android could not keep this work active in the background: ${error.message ?: "service unavailable"}")
+            }
+        }
         slot.getAndSet(id)?.let(foregroundLeases::release)
         return id
     }
@@ -861,7 +1030,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
      * for the UI to open in the browser. The exchange completes asynchronously; state flips when done.
      */
     fun startCodexSignIn(): String? {
-        val lease = beginLease(authLease, "codex-auth")
         return runCatching {
             val url = codexAuth.buildAuthUrl()
             val verifier = requireNotNull(codexAuth.pendingVerifier)
@@ -871,7 +1039,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 onError = { message ->
                     viewModelScope.launch(Dispatchers.IO) {
                         _state.update { it.copy(error = "Codex sign-in failed: $message") }
-                        endLease(authLease, lease)
                     }
                 },
             ) { code ->
@@ -885,19 +1052,15 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                             codexAuth.stopLoopback()
                             _state.update { it.copy(error = "Codex sign-in failed: ${e.message}") }
                         }
-                    endLease(authLease, lease)
                 }
             }
             viewModelScope.launch(Dispatchers.IO) {
                 kotlinx.coroutines.delay(5 * 60_000L)
-                if (endLease(authLease, lease)) {
-                    codexAuth.stopLoopback()
-                }
+                codexAuth.stopLoopback()
             }
             url
         }.getOrElse { e ->
             codexAuth.stopLoopback()
-            endLease(authLease, lease)
             _state.update { it.copy(error = "Codex sign-in failed: ${e.message}") }
             null
         }
@@ -905,7 +1068,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
 
     fun signOutCodex() {
         codexAuth.stopLoopback()
-        endLease(authLease)
         codexAuth.signOut() // CodexAuth owns its key names - don't duplicate them here (matches signOutGitHub)
         _state.update { state ->
             val selected = if (state.selected?.providerId == "codex") {
@@ -927,7 +1089,6 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     fun startGitHubSignIn() {
         if (githubSignInActive) return
         githubSignInActive = true
-        val lease = beginLease(githubAuthLease, "github-auth")
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 runCatching {
@@ -947,19 +1108,16 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 }
             } finally {
                 githubSignInActive = false
-                endLease(githubAuthLease, lease)
             }
         }
     }
 
     fun cancelGitHubSignIn() {
         githubSignInActive = false
-        endLease(githubAuthLease)
         _state.update { it.copy(githubAuthCode = null, githubVerifyUri = null) }
     }
 
     fun signOutGitHub() {
-        endLease(githubAuthLease)
         githubAuth.signOut()
         _state.update { it.copy(githubLogin = null) }
     }
@@ -1073,13 +1231,18 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             mode = parentMode,
             environment = environment(),
             reasoningEffort = _state.value.effort,
-            skills = discoveredSkills.map { SkillInfo(it.name, it.description) },
+            mcpInstructions = mcpInstructions(),
             sessionId = "phonecode-sub",
         )
         val childTools = ToolRegistry(tools.all().filterNot { it.name == "task" || it.planOnly })
         val childLoop = AgentLoop(
             provider, childTools, toolContext, childConfig,
             modeProvider = { parentMode },
+            toolProvider = {
+                refreshRuntimeConfiguration()
+                ToolRegistry(tools.all().filterNot { it.name == "task" || it.planOnly })
+            },
+            mcpInstructionsProvider = { mcpInstructions() },
         )
         val out = StringBuilder()
         var childError: String? = null
@@ -1166,7 +1329,7 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                 mode = _state.value.agentMode,
                 environment = environment(),
                 reasoningEffort = if (reasons) _state.value.effort else ReasoningEffort.DEFAULT,
-                skills = discoveredSkills.map { SkillInfo(it.name, it.description) },
+                mcpInstructions = mcpInstructions(),
                 sessionId = turnSessionId,
                 projectInstructions = if (custom.isNotEmpty()) listOf(custom) else emptyList(),
             )
@@ -1184,6 +1347,11 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
                     followUp = queueSource, // ...or run as a follow-up turn if queued right as the turn ends
                     turnSettings = { TurnSettings(config.model, if (reasons) _state.value.effort else ReasoningEffort.DEFAULT, limit?.context, limit?.output) },
                     modeProvider = { _state.value.agentMode }, // live so a plan_exit approval flips PLAN→BUILD mid-run
+                    toolProvider = {
+                        refreshRuntimeConfiguration()
+                        tools
+                    },
+                    mcpInstructionsProvider = { mcpInstructions() },
                 )
                 if (startingHistory.isEmpty()) autoBranchIfEnabled(pinnedWorkspace, turnSessionId)
                 loop.run(startingHistory, userParts).collect { event ->
@@ -1458,29 +1626,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun environment(): AgentEnvironment {
-        val u = userland
-        val base = if (u.applets.isNotEmpty()) {
-            "busybox ash with ${u.applets.size} applets + Android toybox; " +
-                "HOME=${u.env["HOME"]}, TMPDIR=${u.env["TMPDIR"]}, PREFIX=${u.env["PREFIX"]}"
-        } else {
-            "Android toybox /system/bin/sh (ls, cat, grep, sed, find, ps, tar, ...); " +
-                "HOME=${u.env["HOME"]}, TMPDIR=${u.env["TMPDIR"]}"
-        }
-        // Tell the model a real package manager is reachable, and steer it to install rather than improvise.
-        val linux = when {
-            u.linuxReady() -> ". A full Alpine Linux is active via proot: install what you need with " +
-                "`apk add python3 py3-pip nodejs ...` and use it (cwd is your workspace, so installed tools " +
-                "edit the same files as the file tools). Prefer installing the real tool over improvising one " +
-                "from busybox (e.g. `python3 -m http.server`, not an `nc` loop)."
-            u.linuxAvailable -> ". The bundled Alpine Linux environment is being prepared. The first shell command " +
-                "waits for setup, then `apk add python3 py3-pip nodejs npm build-base ...` can install real tools."
-            else -> ""
-        }
+        val linuxReady = userland.ensureLinux()
         val projectFolder = _state.value.projects.firstOrNull { it.id == currentProjectId }?.folderId?.let { folderId ->
             _state.value.sharedFolders.firstOrNull { it.id == folderId }
         }
         val projectDetail = projectFolder?.let {
-            ". The active Project is linked to the phone folder '${it.name}' through shared_files root='${it.id}'."
+            " The phone folder '${it.name}' is available through the shared-file tools."
         }.orEmpty()
         return AgentEnvironment(
             platform = "Android",
@@ -1489,8 +1640,12 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
             // Match toolContext's workspaceProvider: a pinned turn workspace takes precedence over the live one,
             // so the path the prompt reports is the path tools actually write to.
             workspacePath = (turnWorkspace ?: workspace).absolutePath,
-            shellAvailable = true,
-            shellDetail = base + linux + projectDetail,
+            shellAvailable = linuxReady,
+            shellDetail = if (linuxReady) {
+                "bundled Alpine Linux compatibility prototype; the workspace is /workspace; use only bundled commands and do not download executable packages.$projectDetail"
+            } else {
+                "The bundled Alpine environment could not be prepared.$projectDetail"
+            },
             configPath = File(getApplication<Application>().filesDir, "config").absolutePath,
         )
     }
@@ -1501,11 +1656,28 @@ class ChatViewModel(app: Application) : AndroidViewModel(app) {
         // Stop background daemons promptly: the GitHub poll thread checks this flag every ≤500ms,
         // and the Codex loopback listener would otherwise hold port 1455 until its 5-min timeout.
         githubSignInActive = false
+        configHotReload.close()
         codexAuth.stopLoopback()
-        endLease(authLease)
-        endLease(githubAuthLease)
+        foregroundLeases.unregisterStopHandler("turn")
+        foregroundLeases.unregisterStopHandler("processes")
+        processManager.stopAll()
         super.onCleared()
     }
+}
+
+internal fun aiReportPayload(
+    category: String,
+    note: String,
+    appVersion: String,
+): String {
+    require(category in setOf("hate", "harassment", "sexual", "violence", "self_harm", "illegal", "privacy", "other"))
+    return buildJsonObject {
+        put("version", 1)
+        put("category", category)
+        put("appVersion", appVersion)
+        put("platform", "android")
+        note.trim().takeIf { it.isNotEmpty() }?.let { put("note", it.take(1000)) }
+    }.toString()
 }
 
 /**

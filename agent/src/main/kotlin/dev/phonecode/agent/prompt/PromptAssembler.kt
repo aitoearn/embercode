@@ -24,11 +24,10 @@ object PromptAssembler {
             appendLine("# Project instructions")
             config.projectInstructions.forEach { appendLine(it) }
         }
-        if (config.skills.isNotEmpty()) {
+        if (config.mcpInstructions.isNotEmpty()) {
             appendLine()
-            appendLine("# Available skills")
-            appendLine("Load a skill with the skill tool when a task matches its description.")
-            config.skills.forEach { appendLine("- ${it.name}: ${it.description}") }
+            appendLine("# MCP server instructions")
+            config.mcpInstructions.forEach { appendLine(it) }
         }
         if (mode == AgentMode.PLAN) {
             appendLine()
@@ -60,7 +59,8 @@ object PromptAssembler {
         appendLine("- Platform: ${env.platform} (${env.deviceModel}, ${env.osVersion})")
         appendLine("- Workspace: ${env.workspacePath}")
         val shellLine = when {
-            !env.shellAvailable -> "NOT available - use the file/git tools"
+            !env.shellAvailable -> "NOT available - use the file/git tools" +
+                env.shellDetail.takeIf { it.isNotEmpty() }?.let { ". $it" }.orEmpty()
             env.shellDetail.isNotEmpty() -> "available - ${env.shellDetail}"
             else -> "available"
         }

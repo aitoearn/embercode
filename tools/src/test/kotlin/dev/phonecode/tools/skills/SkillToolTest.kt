@@ -8,6 +8,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.file.Files
 
 class SkillToolTest {
 
@@ -22,6 +23,11 @@ class SkillToolTest {
         val description = SkillTool(skills).description
         assertTrue(description.contains("pdf"))
         assertTrue(description.contains("Work with PDFs"))
+    }
+
+    @Test fun descriptionCatalogIsBounded() {
+        val many = (1..200).map { SkillManifest("skill-$it", "x".repeat(100), "body", "/skills/$it/SKILL.md") }
+        assertTrue(SkillTool(many).description.length <= 8_000)
     }
 
     @Test fun loadsSkillBodyWrappedInSkillContent() = runBlocking {
@@ -39,5 +45,45 @@ class SkillToolTest {
     @Test fun missingNameIsError() = runBlocking {
         val result = SkillTool(skills).execute(JsonObject(emptyMap()), Ctx)
         assertTrue(result.isError)
+    }
+
+    @Test fun loadsBoundedRelativeResource() = runBlocking {
+        val root = Files.createTempDirectory("phonecode-skill").toFile()
+        try {
+            val skillFile = root.resolve("SKILL.md").apply { writeText("manifest") }
+            root.resolve("references").mkdirs()
+            root.resolve("references/guide.md").writeText("Use the focused check.")
+            val tool = SkillTool(listOf(SkillManifest("validation", "Validate", "body", skillFile.absolutePath)))
+
+            val result = tool.execute(
+                buildJsonObject { put("name", "validation"); put("path", "references/guide.md") },
+                Ctx,
+            )
+
+            assertFalse(result.isError)
+            assertTrue(result.output.contains("Use the focused check."))
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun rejectsResourceTraversal() = runBlocking {
+        val parent = Files.createTempDirectory("phonecode-skills").toFile()
+        try {
+            val root = parent.resolve("skill").apply { mkdirs() }
+            val skillFile = root.resolve("SKILL.md").apply { writeText("manifest") }
+            parent.resolve("secret.txt").writeText("secret")
+            val tool = SkillTool(listOf(SkillManifest("safe", "Safe", "body", skillFile.absolutePath)))
+
+            val result = tool.execute(
+                buildJsonObject { put("name", "safe"); put("path", "../secret.txt") },
+                Ctx,
+            )
+
+            assertTrue(result.isError)
+            assertFalse(result.output.contains("secret"))
+        } finally {
+            parent.deleteRecursively()
+        }
     }
 }

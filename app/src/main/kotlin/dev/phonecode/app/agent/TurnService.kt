@@ -1,8 +1,10 @@
 package dev.phonecode.app.agent
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -10,16 +12,11 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import dev.phonecode.app.MainActivity
+import dev.phonecode.app.PhoneCodeApplication
 import dev.phonecode.app.R
 
-/**
- * Foreground service held ONLY while a turn is running: without it the system suspends the
- * process soon after the screen turns off and the streaming HTTP call dies mid-response
- * (device feedback). dataSync type, quiet low-importance notification, stopped the moment the
- * turn ends. No work happens here - the turn lives in the ViewModel; this just holds the lease.
- */
 class TurnService : Service() {
-
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -30,29 +27,53 @@ class TurnService : Service() {
             CHANNEL_ID,
             "Agent activity",
             NotificationManager.IMPORTANCE_LOW,
-        ).apply { description = "Shown while the agent is working so responses survive the screen turning off." }
+        ).apply {
+            description = "Shown while PhoneCode is working in the background."
+        }
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
+    @SuppressLint("WakelockTimeout")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP) {
+            (application as PhoneCodeApplication).foregroundLeases.stopAll()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelfResult(startId)
+            return START_NOT_STICKY
+        }
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val stop = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, TurnService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val notification = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentTitle("PhoneCode is working")
-            .setContentText("Agent turns and development processes stay active.")
+            .setContentText("Agent work and local processes remain active.")
+            .setContentIntent(open)
+            .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
+            .addAction(Notification.Action.Builder(null, "Stop", stop).build())
             .build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        if (Build.VERSION.SDK_INT >= 34) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
-        // The foreground service keeps the process alive but does NOT keep the CPU awake; without this
-        // partial wake lock the streaming HTTP call stalls once the screen turns off (Doze). Idempotent so
-        // repeated start deliveries don't stack; the 60-min timeout is a safety net against a missed stop.
         if (wakeLock == null) {
             wakeLock = getSystemService(PowerManager::class.java)
                 .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "PhoneCode:turn")
-                .apply { setReferenceCounted(false); acquire(60 * 60 * 1000L) }
+                .apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
         }
         return START_NOT_STICKY
     }
@@ -63,14 +84,19 @@ class TurnService : Service() {
         super.onDestroy()
     }
 
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        (application as PhoneCodeApplication).foregroundLeases.stopAll()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelfResult(startId)
+    }
+
     companion object {
+        private const val ACTION_STOP = "dev.phonecode.app.action.STOP_WORK"
         private const val CHANNEL_ID = "turn"
         private const val NOTIFICATION_ID = 1
 
         fun start(context: Context) {
-            // Best-effort: background-start restrictions can reject this (rare; the app is in the
-            // foreground when a turn starts) - the turn itself must never die over the notification.
-            runCatching { context.startForegroundService(Intent(context, TurnService::class.java)) }
+            context.startForegroundService(Intent(context, TurnService::class.java))
         }
 
         fun stop(context: Context) {

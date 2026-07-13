@@ -11,6 +11,7 @@ data class McpServerConfig(
     val url: String = "",
     val headers: Map<String, String> = emptyMap(),
     val enabled: Boolean = true,
+    val timeout: Long = 5_000,
 )
 
 @Serializable
@@ -18,8 +19,10 @@ data class McpConfig(val mcp: Map<String, McpServerConfig> = emptyMap())
 
 private val mcpJson = Json { ignoreUnknownKeys = true; isLenient = true; encodeDefaults = true }
 
+fun decodeMcpConfig(json: String): McpConfig = mcpJson.decodeFromString(json)
+
 /** Parses the MCP config; tolerates malformed input by returning an empty config. */
 fun parseMcpConfig(json: String): McpConfig =
-    runCatching { mcpJson.decodeFromString<McpConfig>(json) }.getOrDefault(McpConfig())
+    runCatching { decodeMcpConfig(json) }.getOrDefault(McpConfig())
 
 fun McpConfig.serialize(): String = mcpJson.encodeToString(McpConfig.serializer(), this)

@@ -17,9 +17,10 @@
 </p>
 
 PhoneCode runs the agent loop on your device. It reads, writes, and edits files in per-project
-workspaces, runs git and a full Alpine Linux userland locally, searches the web, and talks to the
-model provider you choose. There is no PhoneCode backend, telemetry, or required account. API keys
-live in the Android Keystore, and prompts go only to the selected provider.
+workspaces, runs Git and a bundled Alpine Linux environment locally, searches the web, and talks to
+the model provider you choose. There is no PhoneCode backend, telemetry, remote execution service,
+or required account. API keys live in the Android Keystore, and prompts go only to the selected
+provider.
 
 ## App
 
@@ -51,14 +52,14 @@ build of OpenCode.
 
 ## Features
 
-- **On-device agent** with a full coding-agent tool surface (modeled on OpenCode's): read, write,
+- **On-device agent** with a native coding-agent tool surface: read, write,
   edit, glob, grep, ls, apply_patch, todo lists, plan and build modes, user questions, subagents
   (task tool), webfetch with free web search, MCP servers (Streamable HTTP and SSE), and
   progressive-disclosure skills (SKILL.md).
-- **Local Linux environment** built from BusyBox and Alpine under PRoot. The agent can install
-  Python, Node.js, npm packages, compilers, and other tools with `apk`, run long builds, and manage
-  background commands with persistent logs, stdin, and explicit shutdown inside its private
-  workspace.
+- **On-device development runtime in active migration.** The current arm64 Alpine/PRoot runtime is
+  a sideload development prototype. The Google Play architecture is a software-emulated QEMU Linux
+  VM so packages execute on a virtual CPU behind an isolated Android process. The app will not claim
+  arbitrary outside-Play native package installation until that VM boundary passes its release gate.
 - **Providers**: OpenCode Zen and Go, Anthropic, OpenAI, OpenRouter, Google, xAI, DeepSeek,
   Mistral, and custom endpoints. Models and reasoning levels refresh automatically from models.dev;
   ChatGPT sign-in uses the account's authenticated Codex catalog. You can enable or disable
@@ -85,9 +86,9 @@ Requirements: JDK 21 and the Android SDK (platform 37.0, build-tools 36). Androi
 needed. PhoneCode supports Android 8.0 and newer.
 
 ```bash
-./gradlew :app:assembleRelease
-./gradlew :app:bundleRelease
-./gradlew :provider:test :tools:test :agent:test :app:testDebugUnitTest :app:lintDebug
+./gradlew :app:assembleDebug
+./gradlew :provider:test :tools:test :agent:test :app:testDebugUnitTest :app:lintDebug \
+  :app:verifyLegalInventory :app:verifyPrototypeRuntimeBoundary
 ```
 
 The project has four modules. `:app` holds the Compose UI and Android glue. `:agent` holds the loop,
@@ -95,10 +96,9 @@ prompts, and compaction. `:provider` holds the wire formats and catalog. `:tools
 git, web, todo, MCP, and skills tooling. The three library modules are pure JVM and fully
 unit-tested.
 
-Production bundles are unsigned unless `PHONECODE_RELEASE_STORE_FILE`,
-`PHONECODE_RELEASE_STORE_PASSWORD`, `PHONECODE_RELEASE_KEY_ALIAS`, and
-`PHONECODE_RELEASE_KEY_PASSWORD` are supplied as Gradle properties or environment variables. Use a
-dedicated upload key with Play App Signing and keep it outside the repository.
+Google Play release artifacts remain intentionally blocked until the QEMU runtime, licensing, API,
+and Android App Bundle audits pass. When that gate opens, use a dedicated upload key with Play App
+Signing and keep it outside the repository.
 
 ## Notes
 
@@ -110,10 +110,12 @@ dedicated upload key with Play App Signing and keep it outside the repository.
   Settings > About.
 - The public Play policy URLs are `https://dttdrv.xyz/phonecode-privacy` and
   `https://dttdrv.xyz/phonecode-terms` after the website repository is deployed.
-- The optional remote execution direction is documented in [`MOBILE_BACKEND.md`](MOBILE_BACKEND.md).
-  The current release remains on-device.
+- The local execution architecture is documented in [`MOBILE_BACKEND.md`](MOBILE_BACKEND.md).
 
 ## Licenses
+
+PhoneCode's original code is Copyright 2026 dttdrv and licensed under the
+[Apache License 2.0](LICENSE).
 
 PhoneCode bundles and adapts open-source work. The full list is in [`THIRD_PARTY.md`](THIRD_PARTY.md)
 and in-app under Settings > About > Open-source licenses. In particular:
@@ -121,8 +123,9 @@ and in-app under Settings > About > Open-source licenses. In particular:
 - **OpenCode** (MIT, Copyright (c) 2025 opencode) - the agent's prompt structure, tool schemas, and
   loop design are adapted from OpenCode. PhoneCode is an independent project and is not affiliated
   with the OpenCode team.
-- **Mermaid** (MIT) - inline diagram rendering. **PRoot** (GPL-2.0) and **talloc** (LGPL-3.0) - the
-  Linux sandbox. **BusyBox** (GPL-2.0) - the on-device shell toolkit.
+- **Mermaid** (MIT) - inline diagram rendering. **PRoot** (GPL-2.0) and **talloc** (LGPL-3.0) -
+  the Linux compatibility layer. **BusyBox** (GPL-2.0) and **Alpine Linux** - the bundled local
+  development environment.
 
 Vendored artifacts are pinned in [`VENDORED_CHECKSUMS`](VENDORED_CHECKSUMS) and verified by the
 repository checks.

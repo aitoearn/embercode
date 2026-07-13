@@ -11,12 +11,16 @@ internal fun sanitizeMcpName(value: String): String = value.replace(Regex("[^a-z
 /** Adapts a remote MCP tool into a PhoneCode [Tool], namespaced as sanitize(server)_sanitize(tool). */
 class McpTool(serverName: String, private val def: McpToolDef, private val client: McpClient) : Tool {
     override val name: String = "${sanitizeMcpName(serverName)}_${sanitizeMcpName(def.name)}"
-    override val description: String = def.description
+    override val description: String = def.description.ifBlank { def.title.ifBlank { def.name } }
     override val parameters: JsonObject = def.inputSchema
     override val mutating: Boolean = true // MCP tools may have side effects; gate through permission
-    override val promptSnippet: String = def.description.ifBlank { "MCP tool ${def.name}" }
+    override val promptSnippet: String = description
 
     override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult =
-        runCatching { ToolResult(client.callTool(def.name, args)) }
+        runCatching {
+            val output = client.callTool(def.name, args)
+            if (output.startsWith("ERROR: ")) ToolResult(output.removePrefix("ERROR: "), isError = true)
+            else ToolResult(output)
+        }
             .getOrElse { ToolResult("mcp '${def.name}' failed: ${it.message}", isError = true) }
 }

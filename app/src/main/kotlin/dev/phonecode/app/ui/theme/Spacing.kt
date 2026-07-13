@@ -12,7 +12,7 @@ object Spacing {
     val xl = 24.dp
     val xxl = 32.dp
     val xxxl = 48.dp
-    val touchTarget = 44.dp
+    val touchTarget = 48.dp
     val navBarHeight = 52.dp
     val inputHeight = 40.dp
 }

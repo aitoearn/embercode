@@ -3,11 +3,14 @@ package dev.phonecode.tools.shell
 import dev.phonecode.tools.Tool
 import dev.phonecode.tools.ToolContext
 import dev.phonecode.tools.ToolResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -17,25 +20,16 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import java.io.File
+import java.util.concurrent.TimeUnit
 
-/**
- * Real terminal access inside the app sandbox: busybox ash + applet symlinks (when the app has
- * bootstrapped them) layered over Android's toybox /system/bin/sh - no root involved.
- * Commands run with the workspace as cwd, the injected [environment] (HOME/TMPDIR/PREFIX/PATH),
- * merged stdout+stderr, a hard wall-clock timeout (watchdog destroys the process), and a bounded
- * output capture. mutating=true routes every invocation through the user permission gate.
- *
- * [shellProvider]/[environment] are lazy so the (filesystem-touching) userland bootstrap runs on
- * first use, off the main thread - and injectable so JVM tests can substitute the host's shell.
- */
 class ShellTool(
-    private val shellProvider: (String) -> List<String> = { listOf("/system/bin/sh", "-c") },
+    private val shellProvider: (String) -> List<String> = { emptyList() },
     private val environment: () -> Map<String, String> = { emptyMap() },
     private val processManager: ProcessManager? = null,
 ) : Tool {
     override val name = "bash"
     override val description =
-        "Run a shell command in the workspace using the active POSIX or Alpine environment. " +
+        "Run a shell command in the active workspace using the bundled Alpine environment. " +
             "Set background=true for any long-running command that must outlive the tool call."
     override val mutating = true
 
@@ -51,8 +45,8 @@ class ShellTool(
 
     override val promptSnippet = "bash - run commands or start managed background processes in the workspace"
     override val promptGuidelines = listOf(
-        "bash runs inside the app sandbox: the workspace and app files are writable, system paths are read-only.",
-        "Run scripts as `sh script.sh` - Android denies direct execution (./script.sh) of any file under app data.",
+        "bash runs inside a private Alpine environment with only the active workspace mounted at /workspace.",
+        "Do not download or install executable packages until the VM runtime is active.",
         "Long operations: pass timeout_s (max 1800); the process is killed at the limit.",
         "Long-running commands: set background=true and do not append '&'; use the process tool for logs, stdin, and shutdown.",
         "Verify background work with its logs and a capability-specific check before reporting success.",
@@ -62,6 +56,12 @@ class ShellTool(
         val command = (args["command"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
             ?: return@withContext ToolResult("bash: missing 'command'", isError = true)
         val background = (args["background"] as? JsonPrimitive)?.booleanOrNull == true
+        val shell = runCatching { shellProvider(context.workspacePath) }.getOrElse {
+            return@withContext ToolResult("bash: ${it.message ?: "bundled Alpine environment is not ready"}", true)
+        }
+        if (shell.isEmpty()) {
+            return@withContext ToolResult("bash: bundled Alpine environment is not ready", true)
+        }
         if (background) {
             return@withContext processManager?.start(command, context.workspacePath)
                 ?: ToolResult("bash: background processes are unavailable", isError = true)
@@ -70,31 +70,34 @@ class ShellTool(
 
         runCatching {
             val commandEnvironment = environment()
-            val process = ProcessBuilder(shellProvider(context.workspacePath) + command)
+            val process = ProcessBuilder(shell + command)
                 .directory(if ("PROOT_LOADER" in commandEnvironment) File("/") else File(context.workspacePath))
                 .redirectErrorStream(true)
                 .apply { environment().putAll(commandEnvironment) }
                 .start()
             coroutineScope {
                 var timedOut = false
-                val watchdog = launch {
-                    delay(timeoutS * 1_000L)
-                    timedOut = true
-                    process.destroyForcibly()
-                }
-                // Read to EOF with a cap; reading concurrently with the watchdog prevents both
-                // pipe-full deadlock and runaway memory.
                 val output = StringBuilder()
-                process.inputStream.bufferedReader().use { reader ->
-                    val buf = CharArray(4096)
-                    while (true) {
-                        val n = reader.read(buf)
-                        if (n < 0) break
-                        if (output.length < MAX_OUTPUT) output.append(buf, 0, n)
+                val reader = async(Dispatchers.IO) {
+                    process.inputStream.bufferedReader().use { stream ->
+                        val buf = CharArray(4096)
+                        while (true) {
+                            val n = stream.read(buf)
+                            if (n < 0) break
+                            if (output.length < MAX_OUTPUT) output.append(buf, 0, n)
+                        }
                     }
                 }
-                val exit = process.waitFor()
-                watchdog.cancel()
+                val exit = try {
+                    withTimeout(timeoutS * 1_000L) { runInterruptible { process.waitFor() } }
+                } catch (_: TimeoutCancellationException) {
+                    timedOut = true
+                    terminate(process)
+                    runCatching { process.exitValue() }.getOrDefault(-1)
+                } finally {
+                    if (process.isAlive) terminate(process)
+                }
+                reader.await()
                 val truncated = output.length >= MAX_OUTPUT
                 val body = buildString {
                     append(output.take(MAX_OUTPUT))
@@ -105,11 +108,20 @@ class ShellTool(
                 ToolResult(body, isError = exit != 0 || timedOut)
             }
         }.getOrElse { e ->
+            if (e is CancellationException) throw e
             ToolResult("bash failed: ${e.message}", isError = true)
         }
     }
 
     private companion object {
         const val MAX_OUTPUT = 48_000
+
+        private fun terminate(process: Process) {
+            process.destroy()
+            if (!runCatching { process.waitFor(2, TimeUnit.SECONDS) }.getOrDefault(false)) {
+                process.destroyForcibly()
+                runCatching { process.waitFor(2, TimeUnit.SECONDS) }
+            }
+        }
     }
 }

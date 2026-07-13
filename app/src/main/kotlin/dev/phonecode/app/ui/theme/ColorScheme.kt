@@ -28,8 +28,8 @@ private val DarkInk1 = Color(0xFFFFFFFF)
 private val DarkInk2 = Color(0x9EEBEBF5)
 private val DarkInk3 = Color(0x66EBEBF5)
 private val LightInk1 = Color(0xFF000000)
-private val LightInk2 = Color(0x9E3C3C43)
-private val LightInk3 = Color(0x6B3C3C43)
+private val LightInk2 = Color(0xFF5F6368)
+private val LightInk3 = Color(0xFF73777C)
 
 // Edge-definition rings (Grok: a solid one-step ring, not an alpha hairline).
 private val DarkHair = Color(0xFF2A2A2A)
@@ -39,7 +39,7 @@ private val LightHair2 = Color(0xFFD9D9D9)
 
 private val ErrorRed = Color(0xFFFF453A)
 private val ErrorRedDk = Color(0xFF3A0A07)
-private val ErrorRedLt = Color(0xFFFF3B30)
+private val ErrorRedLt = Color(0xFFB3261E)
 private val ErrorRedLtC = Color(0xFFFFE5E3)
 
 fun phoneDarkColorScheme(): ColorScheme = darkColorScheme(

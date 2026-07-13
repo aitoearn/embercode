@@ -17,12 +17,13 @@ class McpConfigTest {
         assertEquals(2, cfg.mcp.size)
         assertEquals("https://x/mcp", cfg.mcp.getValue("weather").url)
         assertEquals("Bearer k", cfg.mcp.getValue("weather").headers["Authorization"])
-        assertTrue(cfg.mcp.getValue("weather").enabled) // default
+        assertTrue(cfg.mcp.getValue("weather").enabled)
+        assertEquals(5_000, cfg.mcp.getValue("weather").timeout)
         assertFalse(cfg.mcp.getValue("off").enabled)
     }
 
     @Test fun roundTripsThroughSerialize() {
-        val cfg = McpConfig(mapOf("s" to McpServerConfig(url = "https://z/mcp", enabled = true)))
+        val cfg = McpConfig(mapOf("s" to McpServerConfig(url = "https://z/mcp", enabled = true, timeout = 12_000)))
         assertEquals(cfg, parseMcpConfig(cfg.serialize()))
     }
 
@@ -39,6 +40,31 @@ class McpConfigTest {
 
     @Test fun skillMarkdownRejectsMissingName() {
         assertNull(parseSkillMarkdown("---\ndescription: no name here\n---\nbody"))
+        assertNull(parseSkillMarkdown("---\nname: no-description\n---\nbody"))
+        assertNull(parseSkillMarkdown("---\nname: Invalid_Name\ndescription: invalid\n---\nbody"))
+        assertNull(parseSkillMarkdown("---\nname: invalid--name\ndescription: invalid\n---\nbody"))
         assertNull(parseSkillMarkdown("no frontmatter at all"))
+    }
+
+    @Test fun skillMarkdownParsesFoldedMetadata() {
+        val skill = parseSkillMarkdown(
+            """---
+name: project-validation
+description: >
+  Validate focused tests, builds, and
+  the packaged artifact before completion.
+license: Apache-2.0
+compatibility: |
+  Requires a project build tool.
+  Works offline.
+---
+Run the checks.
+""",
+            "/skills/project-validation/SKILL.md",
+        )!!
+        assertEquals("Validate focused tests, builds, and the packaged artifact before completion.", skill.description)
+        assertEquals("Apache-2.0", skill.license)
+        assertEquals("Requires a project build tool.\nWorks offline.", skill.compatibility)
+        assertEquals("/skills/project-validation/SKILL.md", skill.location)
     }
 }

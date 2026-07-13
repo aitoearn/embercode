@@ -1,6 +1,9 @@
 package dev.phonecode.app.ui.components
 
+import androidx.activity.BackEventCompat
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
@@ -15,12 +18,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -30,14 +35,22 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -45,7 +58,56 @@ import androidx.compose.ui.unit.dp
 import dev.phonecode.app.ui.theme.ShapePill
 import dev.phonecode.app.ui.theme.ShapeMediumIcon
 import dev.phonecode.app.ui.theme.Spacing
+import dev.phonecode.app.ui.theme.PhoneSprings
 import androidx.compose.material3.Icon
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.withContext
+
+data class PredictiveBackMotion(val progress: Float, val swipeEdge: Int)
+
+@Composable
+fun rememberPredictiveBackMotion(
+    enabled: Boolean = true,
+    onBack: suspend () -> Unit,
+): PredictiveBackMotion {
+    var progress by remember { mutableFloatStateOf(0f) }
+    var swipeEdge by remember { mutableIntStateOf(BackEventCompat.EDGE_LEFT) }
+    val currentOnBack by rememberUpdatedState(onBack)
+    val density = LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    PredictiveBackHandler(enabled = enabled && !imeVisible) { events ->
+        try {
+            events.collect { event ->
+                progress = event.progress
+                swipeEdge = event.swipeEdge
+            }
+            currentOnBack()
+        } catch (cancelled: CancellationException) {
+            withContext(NonCancellable) {
+                animate(progress, 0f, animationSpec = PhoneSprings.quick) { value, _ -> progress = value }
+            }
+            throw cancelled
+        } finally {
+            progress = 0f
+        }
+    }
+    return PredictiveBackMotion(progress, swipeEdge)
+}
+
+fun Modifier.predictiveBackTransform(motion: PredictiveBackMotion): Modifier = graphicsLayer {
+    val fraction = motion.progress.coerceIn(0f, 1f)
+    val direction = if (motion.swipeEdge == BackEventCompat.EDGE_RIGHT) -1f else 1f
+    val scale = 1f - 0.04f * fraction
+    translationX = size.width * 0.1f * fraction * direction
+    scaleX = scale
+    scaleY = scale
+    shadowElevation = 8.dp.toPx() * fraction
+    transformOrigin = TransformOrigin.Center
+    shape = RoundedCornerShape(24.dp)
+    clip = fraction > 0f
+}
 
 // PhoneCode's monochrome component kit (Apple-feel: spring press feedback, hairline borders,
 // generous radii). Everything reads MaterialTheme.colorScheme so light/dark both work.
@@ -82,21 +144,19 @@ fun Modifier.pressFeedback(
     }
 }
 
-/** 40dp icon button - ripple + a 0.90 scale pop, instant down / spring back. */
 @Composable
 fun PcIconButton(icon: ImageVector, contentDescription: String?, modifier: Modifier = Modifier, tint: Color = MaterialTheme.colorScheme.onBackground, onClick: () -> Unit) {
     val interaction = remember { MutableInteractionSource() }
     Box(
         modifier
-            .size(Spacing.inputHeight)
-            .pressFeedback(interaction, pressedScale = 0.90f)
+            .size(Spacing.touchTarget)
+            .pressFeedback(interaction, pressedScale = 0.96f)
             .clip(ShapeMediumIcon)
             .clickable(interactionSource = interaction, indication = ripple(), onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, contentDescription, tint = tint, modifier = Modifier.size(22.dp)) }
 }
 
-/** 40dp circular filled button (composer wrench/send) - round-control press: scale 0.86. */
 @Composable
 fun PcRoundButton(
     icon: ImageVector,
@@ -116,7 +176,7 @@ fun PcRoundButton(
     }
     Box(
         modifier.size(Spacing.inputHeight)
-            .pressFeedback(interaction, pressedScale = 0.86f)
+            .pressFeedback(interaction, pressedScale = 0.95f)
             .clip(ShapePill).background(if (enabled) bg else colors.surfaceContainerHigh)
             .clickable(interactionSource = interaction, indication = ripple(), enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
@@ -125,8 +185,12 @@ fun PcRoundButton(
 
 /** Platform switch - Material's own component IS the native feel; the theme keeps it monochrome. */
 @Composable
-fun PcToggle(checked: Boolean, onChange: (Boolean) -> Unit) {
-    Switch(checked = checked, onCheckedChange = onChange)
+fun PcToggle(checked: Boolean, onChange: (Boolean) -> Unit, contentDescription: String = "Toggle") {
+    Switch(
+        checked = checked,
+        onCheckedChange = onChange,
+        modifier = Modifier.semantics { this.contentDescription = contentDescription },
+    )
 }
 
 @Composable
@@ -176,6 +240,7 @@ fun PcField(
     singleLine: Boolean = true,
     password: Boolean = false,
     minLines: Int = 1,
+    contentDescription: String = placeholder,
 ) {
     val colors = MaterialTheme.colorScheme
     Box(
@@ -193,29 +258,49 @@ fun PcField(
             visualTransformation = if (password) PasswordVisualTransformation() else VisualTransformation.None,
             // Password keyboard type keeps secrets out of IME learning/suggestions.
             keyboardOptions = if (password) KeyboardOptions(keyboardType = KeyboardType.Password) else KeyboardOptions.Default,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().semantics { this.contentDescription = contentDescription },
         )
     }
 }
 
 /** Full-width button: filled (primary) or hairline (alt) - iOS large-control press (0.97 + dim). */
 @Composable
-fun PcButton(text: String, modifier: Modifier = Modifier, filled: Boolean = true, icon: ImageVector? = null, onClick: () -> Unit) {
+fun PcButton(
+    text: String,
+    modifier: Modifier = Modifier,
+    filled: Boolean = true,
+    icon: ImageVector? = null,
+    enabled: Boolean = true,
+    destructive: Boolean = false,
+    onClick: () -> Unit,
+) {
     val colors = MaterialTheme.colorScheme
     val interaction = remember { MutableInteractionSource() }
+    val background = when {
+        !enabled -> colors.surfaceContainerHigh
+        destructive -> colors.errorContainer
+        filled -> colors.primary
+        else -> colors.surfaceContainerHigh
+    }
+    val foreground = when {
+        !enabled -> colors.tertiary
+        destructive -> colors.onErrorContainer
+        filled -> colors.onPrimary
+        else -> colors.onBackground
+    }
     Row(
         modifier.fillMaxWidth().pressFeedback(interaction, pressedScale = 0.97f).clip(MaterialTheme.shapes.small)
-            .background(if (filled) colors.primary else colors.surfaceContainerHigh)
-            .clickable(interactionSource = interaction, indication = ripple(), onClick = onClick)
+            .background(background)
+            .clickable(interactionSource = interaction, indication = ripple(), enabled = enabled, onClick = onClick)
             .heightIn(min = Spacing.touchTarget).padding(horizontal = Spacing.m),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (icon != null) {
-            Icon(icon, null, tint = if (filled) colors.onPrimary else colors.onBackground, modifier = Modifier.size(18.dp))
+            Icon(icon, null, tint = foreground, modifier = Modifier.size(18.dp))
             Box(Modifier.width(8.dp))
         }
-        Text(text, style = MaterialTheme.typography.labelLarge, color = if (filled) colors.onPrimary else colors.onBackground)
+        Text(text, style = MaterialTheme.typography.labelLarge, color = foreground)
     }
 }
 

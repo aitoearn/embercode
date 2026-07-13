@@ -1,44 +1,40 @@
-# Bundled native binaries - provenance
+# Bundled native prototype provenance
 
-These are prebuilt third-party binaries vendored into `jniLibs` (the only place Android lets an app
-exec a binary from - see `EnvironmentBootstrap`). Each is verifiable against the source below: re-fetch
-from the pinned commit and compare the SHA-256.
+The binaries in this directory are development-prototype artifacts. They are not approved for a
+Google Play, App Store, GitHub release, or other binary distribution.
 
-## proot (Linux userland via PRoot) - arm64-v8a only
+## PRoot and loader
 
-- **What:** `libproot.so` is PRoot (userspace chroot+bind via ptrace); `libproot-loader.so` is its
-  statically-linked loader. Together they run a full Alpine Linux rootfs on-device under Android's W^X
-  (`mmap PROT_EXEC` survives where `execve` is denied), so `apk add python3 ...` works.
-- **Source:** https://github.com/green-green-avk/build-proot-android (the PRoot build behind the
-  AnotherTerm terminal app's "Linux under PRoot" feature).
-- **Pinned build commit:** `01f83b8841358450c78333d1b33ab30d4943bec4` (2023-06-23), using PRoot `0.15_release` and talloc `2.4.3`.
-- **Build toolchain:** Android NDK `28.2.13676358`, with 16 KB ELF page alignment for Android 15+ compatibility.
-- **Files + SHA-256 (verified at vendor time):**
-  - `root/bin/proot` -> `arm64-v8a/libproot.so` -> `42a0313a04296d913279c55eccabf9082d31d0f8caf1960079d92342c4629e0c`
-  - `root/libexec/proot/loader` -> `arm64-v8a/libproot-loader.so` -> `12d2b63e897fd91a334fce23edea5d2419cae4d5fd2a369f05d03ab75682add0`
-- **Licenses:** PRoot (GPL-2.0), talloc (LGPL-3.0) - see the source repo.
-- **Scope:** arm64-v8a only. Other ABIs intentionally have no proot and fall back to busybox at runtime
-  (`EnvironmentBootstrap.buildLinux` returns null), keeping the unaudited-binary surface minimal.
-- **Residual risk:** the binaries are built from pinned upstream source outside this repository and
-  committed by hash. Rebuild and compare them when upgrading the NDK, PRoot, or talloc.
+| File | SHA-256 |
+| --- | --- |
+| `arm64-v8a/libproot.so` | `42a0313a04296d913279c55eccabf9082d31d0f8caf1960079d92342c4629e0c` |
+| `arm64-v8a/libproot-loader.so` | `12d2b63e897fd91a334fce23edea5d2419cae4d5fd2a369f05d03ab75682add0` |
 
-To verify the committed files:
+The binaries contain PRoot and statically linked talloc code. PRoot states GPL-2.0-or-later in the
+binary's own version notice. talloc is LGPL-3.0-or-later.
 
-    shasum -a 256 arm64-v8a/libproot.so arm64-v8a/libproot-loader.so
-    llvm-readelf -lW arm64-v8a/libproot.so arm64-v8a/libproot-loader.so
+The previously cited build repository is
+`green-green-avk/build-proot-android@01f83b8841358450c78333d1b33ab30d4943bec4`. That revision pins
+PRoot `0.15_release`, talloc `2.1.14`, and Android NDK `23.2.8568313`. Its published aarch64 archive
+contains these different hashes:
 
-## busybox - arm64-v8a
+| Published file | SHA-256 |
+| --- | --- |
+| `root/bin/proot` | `297abc237247682a84a3fd4283b28f69506502b4b852faf71fd726fb5d955d60` |
+| `root/libexec/proot/loader` | `de0ace1adc76ab0555b3dbbfbff0e78c1ac14017b255262707867aea70c49437` |
 
-- **What:** `arm64-v8a/libbusybox.so` is a static aarch64 busybox - the on-device POSIX shell toolkit,
-  invoked through a `busybox`-named symlink and per-applet symlinks. (The previous arm64 binary was
-  mistakenly a 32-bit ARM build, which does not run on arm64-only devices and broke the whole shell.)
-- **Source:** Alpine Linux `busybox-static` package, v3.21 aarch64.
-- **Pinned:** `busybox-static-1.37.0-r14.apk`, file `bin/busybox.static`.
-- **SHA-256:** `e383c8bc25a1137b8ee88718cc6df1f1e84c54521d6045fc837385995dcdf031`
-- **License:** GPL-2.0.
-- The armeabi-v7a and x86_64 busybox binaries are pre-existing and the correct architecture for their ABI.
+It therefore is not the corresponding source and build recipe for the committed binaries. The
+former claims that these files were built from talloc 2.4.3 with NDK 28.2 and 16 KiB alignment were
+not supported by committed source, patches, commands, or a reproducible build and have been
+withdrawn.
 
-To re-verify:
+Before any distribution, either remove both files from the artifact or replace them with a
+reproducible build whose complete source, Android patches, build scripts, toolchain pin, license
+texts, and output hashes are published beside the binary. Reproducing only the upstream archive is
+not sufficient because its output does not match.
 
-    curl -fsSL https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/busybox-static-1.37.0-r14.apk | tar -xz
-    shasum -a 256 bin/busybox.static
+## Removed standalone BusyBox binaries
+
+The former `libbusybox.so` files are deleted. The Alpine root filesystem still contains BusyBox and
+other GPL-covered programs; their corresponding-source obligations remain separate and are tracked
+in `THIRD_PARTY.md` and `legal/RELEASE_COMPLIANCE.md`.

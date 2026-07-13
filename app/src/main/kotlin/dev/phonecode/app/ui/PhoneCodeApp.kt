@@ -4,8 +4,14 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -42,16 +48,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Archive
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.PushPin
@@ -61,6 +71,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -75,13 +86,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.core.view.WindowCompat
@@ -96,14 +114,18 @@ import dev.phonecode.app.R
 import dev.phonecode.app.PhoneCodeApplication
 import dev.phonecode.app.data.Project
 import dev.phonecode.app.data.SessionMeta
+import dev.phonecode.app.data.SkillStatus
 import dev.phonecode.app.data.ThemeMode
 import dev.phonecode.app.ui.chat.ChatScreen
 import dev.phonecode.app.ui.onboarding.OnboardingScreen
 import dev.phonecode.app.ui.components.PcButton
 import dev.phonecode.app.ui.components.PcField
 import dev.phonecode.app.ui.components.MorphingMenu
-import dev.phonecode.app.ui.components.elasticOverscroll
+import dev.phonecode.app.ui.components.predictiveBackTransform
 import dev.phonecode.app.ui.components.pressFeedback
+import dev.phonecode.app.ui.components.rememberContentOverscroll
+import dev.phonecode.app.ui.components.rememberPredictiveBackMotion
+import dev.phonecode.app.ui.components.shortContentVerticalOverscroll
 import androidx.compose.material3.ripple
 import dev.phonecode.app.ui.settings.SettingsScreen
 import dev.phonecode.app.ui.theme.PhoneCodeTheme
@@ -111,6 +133,10 @@ import dev.phonecode.app.ui.theme.PhoneEasings
 import dev.phonecode.app.ui.theme.PhoneSprings
 import dev.phonecode.app.ui.theme.ShapePill
 import dev.phonecode.app.ui.theme.Spacing
+import dev.phonecode.app.ui.theme.phoneHaze
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -179,6 +205,7 @@ fun PhoneCodeApp() {
         }
 
         var route by rememberSaveable { mutableStateOf("chat") }
+        var routePredictiveCommit by remember { mutableStateOf(false) }
         val focusManager = LocalFocusManager.current
         var settingsInitial by rememberSaveable { mutableStateOf("home") }
 
@@ -202,8 +229,8 @@ fun PhoneCodeApp() {
             animationSpec = PhoneSprings.drawer,
         )
         val drawerOffset = drawerState.offset.takeUnless(Float::isNaN) ?: 0f
-        val progress = (drawerOffset / drawerWidthPx).coerceIn(0f, 1f)
-        val drawerVisible = progress > 0.001f || drawerState.targetValue == DrawerValue.OPEN
+        val drawerProgress = (drawerOffset / drawerWidthPx).coerceIn(0f, 1f)
+        val drawerVisible = drawerProgress > 0.001f || drawerState.targetValue == DrawerValue.OPEN
         val drawerScope = rememberCoroutineScope()
         val openDrawer: () -> Unit = {
             drawerScope.launch { drawerState.animateTo(DrawerValue.OPEN, PhoneSprings.drawer) }
@@ -225,8 +252,15 @@ fun PhoneCodeApp() {
             if (drawerState.targetValue == DrawerValue.OPEN) focusManager.clearFocus()
         }
 
-        BackHandler(enabled = drawerVisible) { closeDrawer() }
-        BackHandler(enabled = !drawerVisible && route != "chat") { route = "chat" }
+        val drawerBackMotion = rememberPredictiveBackMotion(enabled = drawerVisible) {
+            drawerState.animateTo(DrawerValue.CLOSED, snap())
+        }
+        val routeBackMotion = rememberPredictiveBackMotion(enabled = !drawerVisible && route != "chat") {
+            routePredictiveCommit = true
+            route = "chat"
+        }
+        LaunchedEffect(route) { routePredictiveCommit = false }
+        val progress = drawerProgress * (1f - drawerBackMotion.progress)
 
         Box(
             Modifier.fillMaxSize().background(colors.background)
@@ -263,24 +297,37 @@ fun PhoneCodeApp() {
                             }
                         },
                 ) {
+                    Box(
+                        Modifier.fillMaxSize()
+                            .then(if (route == "chat") Modifier else Modifier.clearAndSetSemantics {}),
+                    ) {
+                        ChatScreen(vm, onOpenDrawer = openDrawer, sendOnEnter = settings.sendOnEnter)
+                    }
                     AnimatedContent(
                         targetState = route,
+                        modifier = Modifier.fillMaxSize().predictiveBackTransform(routeBackMotion),
                         transitionSpec = {
-                            val pop = targetState == "chat"
-                            (if (pop) {
-                                (slideInHorizontally(tween(260, easing = PhoneEasings.iOSStandard)) { -it / 4 }) togetherWith
-                                    slideOutHorizontally(tween(220, easing = PhoneEasings.iOSStandard)) { it }
+                            if (routePredictiveCommit) {
+                                androidx.compose.animation.EnterTransition.None togetherWith
+                                    androidx.compose.animation.ExitTransition.None
                             } else {
-                                (slideInHorizontally(tween(260, easing = PhoneEasings.iOSStandard)) { it }) togetherWith
-                                    slideOutHorizontally(tween(220, easing = PhoneEasings.iOSStandard)) { -it / 4 }
-                            }).apply { targetContentZIndex = if (pop) -1f else 1f }
+                                val pop = targetState == "chat"
+                                (if (pop) {
+                                    (slideInHorizontally(tween(260, easing = PhoneEasings.iOSStandard)) { -it / 4 }) togetherWith
+                                        slideOutHorizontally(tween(220, easing = PhoneEasings.iOSStandard)) { it }
+                                } else {
+                                    (slideInHorizontally(tween(260, easing = PhoneEasings.iOSStandard)) { it }) togetherWith
+                                        slideOutHorizontally(tween(220, easing = PhoneEasings.iOSStandard)) { -it / 4 }
+                                }).apply { targetContentZIndex = if (pop) -1f else 1f }
+                            }
                         },
                         label = "route",
                     ) { r ->
-                        Box {
+                        if (r != "chat") Box(Modifier.fillMaxSize()) {
                             when (r) {
                                 "settings" -> SettingsScreen(vm, settingsVm, onBack = { route = "chat" }, initialPage = settingsInitial)
-                                else -> ChatScreen(vm, onOpenDrawer = openDrawer, sendOnEnter = settings.sendOnEnter)
+                                "skills" -> SettingsScreen(vm, settingsVm, onBack = { route = "chat" }, initialPage = "skills")
+                                "mcp" -> SettingsScreen(vm, settingsVm, onBack = { route = "chat" }, initialPage = "mcp")
                             }
                         }
                     }
@@ -313,6 +360,8 @@ fun PhoneCodeApp() {
                                 projectPicker.launch(null)
                             },
                             onOpenSettings = { closeDrawer(); settingsInitial = "home"; route = "settings" },
+                            onOpenSkills = { closeDrawer(); route = "skills" },
+                            onOpenMcp = { closeDrawer(); route = "mcp" },
                         )
                     }
                 }
@@ -354,28 +403,60 @@ private fun Sidebar(
     onOpenChat: () -> Unit,
     onNewProject: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenSkills: () -> Unit,
+    onOpenMcp: () -> Unit,
 ) {
     val colors = MaterialTheme.colorScheme
     val state by vm.state.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
+    var searchExpanded by rememberSaveable { mutableStateOf(false) }
     var chatMenu by remember { mutableStateOf<SessionMeta?>(null) }
     var projectMenu by remember { mutableStateOf<Project?>(null) }
     var renameChat by remember { mutableStateOf<SessionMeta?>(null) }
     var renameProject by remember { mutableStateOf<Project?>(null) }
     var archivedOpen by remember { mutableStateOf(false) }
+    val searchFocus = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    val listState = rememberLazyListState()
+    val hazeState = remember { HazeState() }
+    val hazeStyle = phoneHaze()
+    val listScrolled by remember { derivedStateOf { listState.canScrollBackward } }
+    val listCanScroll by remember { derivedStateOf { listState.canScrollBackward || listState.canScrollForward } }
+    val blurChrome = listCanScroll && !searchExpanded
+    val listOverscroll = rememberContentOverscroll()
 
-    val matchingProjects = state.projects.filter { project ->
-        query.isBlank() || project.name.contains(query, ignoreCase = true) ||
-            state.sessions.any { it.projectId == project.id && it.title.contains(query, ignoreCase = true) }
+    fun closeSearch() {
+        query = ""
+        searchExpanded = false
+        focusManager.clearFocus()
+        keyboard?.hide()
     }
-    val filtered = state.sessions.filter { session ->
-        query.isBlank() || session.title.contains(query, ignoreCase = true) ||
-            state.projects.any { it.id == session.projectId && it.name.contains(query, ignoreCase = true) }
+
+    BackHandler(enabled = searchExpanded) { closeSearch() }
+    LaunchedEffect(searchExpanded) {
+        if (searchExpanded) {
+            searchFocus.requestFocus()
+            keyboard?.show()
+        }
     }
-    val pinned = filtered.filter { it.pinned && !it.archived && it.projectId == null }
-    val archived = filtered.filter { it.archived }
-    val byProject = filtered.filter { !it.archived && it.projectId != null }.groupBy { it.projectId }
-    val loose = filtered.filter { !it.pinned && !it.archived && it.projectId == null }
+
+    val matchingProjects = remember(state.projects, state.sessions, query) {
+        state.projects.filter { project ->
+            query.isBlank() || project.name.contains(query, ignoreCase = true) ||
+                state.sessions.any { it.projectId == project.id && it.title.contains(query, ignoreCase = true) }
+        }
+    }
+    val filtered = remember(state.projects, state.sessions, query) {
+        state.sessions.filter { session ->
+            query.isBlank() || session.title.contains(query, ignoreCase = true) ||
+                state.projects.any { it.id == session.projectId && it.name.contains(query, ignoreCase = true) }
+        }
+    }
+    val pinned = remember(filtered) { filtered.filter { it.pinned && !it.archived && it.projectId == null } }
+    val archived = remember(filtered) { filtered.filter { it.archived } }
+    val byProject = remember(filtered) { filtered.filter { !it.archived && it.projectId != null }.groupBy { it.projectId } }
+    val loose = remember(filtered) { filtered.filter { !it.pinned && !it.archived && it.projectId == null } }
 
     @Composable
     fun SessionItem(meta: SessionMeta, indent: androidx.compose.ui.unit.Dp) {
@@ -401,42 +482,25 @@ private fun Sidebar(
         }
     }
 
-    Column(
-        // One tone above the (scrimmed) canvas behind it - the drawer separates by material.
-        Modifier.width(width).fillMaxSize().background(colors.surfaceContainerLow).windowInsetsPadding(WindowInsets.systemBars),
+    Box(
+        Modifier.width(width).fillMaxSize().background(colors.background)
+            .windowInsetsPadding(WindowInsets.systemBars).clipToBounds(),
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = 18.dp, end = 18.dp, top = 6.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        Box(
+            Modifier.fillMaxSize().shortContentVerticalOverscroll(
+                enabled = !listCanScroll,
+                effect = listOverscroll,
+            ).background(colors.background),
         ) {
-            Icon(
-                painter = painterResource(R.drawable.ic_phonecode_mark),
-                contentDescription = null,
-                tint = colors.onBackground,
-                modifier = Modifier.size(24.dp),
-            )
-            Text("PhoneCode", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold), color = colors.onBackground)
-        }
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = Spacing.m, vertical = Spacing.xs).height(42.dp)
-                .clip(ShapePill).background(colors.surfaceContainerHigh),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.Search, null, tint = colors.secondary, modifier = Modifier.padding(start = 13.dp).size(18.dp))
-            Box(Modifier.weight(1f).padding(horizontal = 9.dp)) {
-                if (query.isEmpty()) Text("Search", style = MaterialTheme.typography.bodySmall, color = colors.secondary)
-                BasicTextField(
-                    value = query, onValueChange = { query = it },
-                    textStyle = MaterialTheme.typography.bodySmall.copy(color = colors.onBackground),
-                    cursorBrush = SolidColor(colors.primary), singleLine = true, modifier = Modifier.fillMaxWidth(),
-                )
-            }
-        }
-
-        Box(Modifier.weight(1f).clipToBounds()) {
-            Column(Modifier.fillMaxSize().elasticOverscroll()) {
-                LazyColumn(Modifier.weight(1f).padding(horizontal = 10.dp), overscrollEffect = null) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize()
+                    .then(if (blurChrome) Modifier.hazeSource(hazeState) else Modifier)
+                    .padding(horizontal = 10.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 112.dp, bottom = 132.dp),
+                overscrollEffect = listOverscroll.takeIf { listCanScroll },
+                userScrollEnabled = listCanScroll,
+            ) {
             item {
                 Text("Projects", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 6.dp))
             }
@@ -484,7 +548,7 @@ private fun Sidebar(
                         Box {
                             val menuInteraction = remember { MutableInteractionSource() }
                             Box(
-                                Modifier.size(34.dp).pressFeedback(menuInteraction, pressedScale = 0.86f)
+                                Modifier.size(34.dp).pressFeedback(menuInteraction, pressedScale = 0.95f)
                                     .clip(MaterialTheme.shapes.extraSmall)
                                     .clickable(interactionSource = menuInteraction, indication = ripple(bounded = false, radius = 18.dp)) { projectMenu = project },
                                 contentAlignment = Alignment.Center,
@@ -559,16 +623,21 @@ private fun Sidebar(
                     }
                 }
             }
+            }
         }
 
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 10.dp),
-                    verticalAlignment = Alignment.Bottom,
-                ) {
+        Row(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                .shadow(2.dp, RectangleShape, clip = false)
+                .then(if (blurChrome) Modifier.hazeEffect(hazeState, hazeStyle) else Modifier)
+                .background(if (blurChrome) colors.background.copy(alpha = 0.35f) else colors.background)
+                .padding(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 10.dp),
+            verticalAlignment = Alignment.Bottom,
+        ) {
             val settingsInteraction = remember { MutableInteractionSource() }
             Box(
                 Modifier.size(48.dp).clip(CircleShape).background(colors.surfaceContainerHigh)
-                    .pressFeedback(settingsInteraction, pressedScale = 0.92f)
+                    .pressFeedback(settingsInteraction, pressedScale = 0.96f)
                     .clickable(interactionSource = settingsInteraction, indication = ripple(), onClick = onOpenSettings),
                 contentAlignment = Alignment.Center,
             ) {
@@ -579,7 +648,7 @@ private fun Sidebar(
                 val newProjectInteraction = remember { MutableInteractionSource() }
                 Box(
                     Modifier.size(48.dp).clip(CircleShape).background(colors.surfaceContainerHigh)
-                        .pressFeedback(newProjectInteraction, pressedScale = 0.92f)
+                        .pressFeedback(newProjectInteraction, pressedScale = 0.96f)
                         .clickable(interactionSource = newProjectInteraction, indication = ripple(), onClick = onNewProject),
                     contentAlignment = Alignment.Center,
                 ) {
@@ -588,14 +657,70 @@ private fun Sidebar(
                 val newChatInteraction = remember { MutableInteractionSource() }
                 Box(
                     Modifier.size(60.dp).clip(CircleShape).background(colors.primary)
-                        .pressFeedback(newChatInteraction, pressedScale = 0.92f)
+                        .pressFeedback(newChatInteraction, pressedScale = 0.96f)
                         .clickable(interactionSource = newChatInteraction, indication = ripple()) { vm.newChat(null); onOpenChat() },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Outlined.Edit, "New chat", tint = colors.onPrimary, modifier = Modifier.size(25.dp))
                 }
             }
+        }
+
+        Column(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth()
+                .shadow(if (listScrolled) 2.dp else 0.dp, RectangleShape, clip = false)
+                .then(if (blurChrome) Modifier.hazeEffect(hazeState, hazeStyle) else Modifier)
+                .background(if (blurChrome) colors.background.copy(alpha = 0.35f) else colors.background),
+        ) {
+            Row(
+                Modifier.fillMaxWidth().height(56.dp).padding(start = 18.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Icon(
+                    painter = painterResource(R.drawable.ic_phonecode_mark),
+                    contentDescription = null,
+                    tint = colors.onBackground,
+                    modifier = Modifier.size(24.dp),
+                )
+                Box(Modifier.weight(1f).height(40.dp), contentAlignment = Alignment.CenterStart) {
+                    SidebarTitleSearch(searchExpanded, query, { query = it }, searchFocus)
                 }
+                val searchInteraction = remember { MutableInteractionSource() }
+                Box(
+                    Modifier.size(48.dp).pressFeedback(searchInteraction, pressedScale = 0.96f)
+                        .clip(CircleShape)
+                        .clickable(interactionSource = searchInteraction, indication = ripple()) {
+                            if (searchExpanded) closeSearch() else searchExpanded = true
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (searchExpanded) Icons.Filled.Close else Icons.Outlined.Search,
+                        if (searchExpanded) "Close search" else "Search chats and projects",
+                        tint = colors.onBackground,
+                        modifier = Modifier.size(21.dp),
+                    )
+                }
+            }
+            Row(
+                Modifier.fillMaxWidth().padding(start = 10.dp, end = 10.dp, bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                SidebarDestination(
+                    icon = Icons.Outlined.AutoAwesome,
+                    label = "Skills",
+                    value = state.skills.count { it.status == SkillStatus.ACTIVE }.toString(),
+                    onClick = onOpenSkills,
+                    modifier = Modifier.weight(1f),
+                )
+                SidebarDestination(
+                    icon = Icons.Outlined.Extension,
+                    label = "MCP",
+                    value = state.mcpServers.size.toString(),
+                    onClick = onOpenMcp,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
@@ -609,6 +734,76 @@ private fun Sidebar(
         TextPromptDialog("Rename project", "Project name", project.name, { renameProject = null }) {
             vm.renameProject(project.id, it); renameProject = null
         }
+    }
+}
+
+@Composable
+private fun SidebarTitleSearch(
+    expanded: Boolean,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    focusRequester: FocusRequester,
+) {
+    val colors = MaterialTheme.colorScheme
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.CenterStart) {
+        AnimatedVisibility(
+            visible = !expanded,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(100)),
+        ) {
+            Text(
+                "PhoneCode",
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = colors.onBackground,
+            )
+        }
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandHorizontally(expandFrom = Alignment.End, animationSpec = tween(220, easing = PhoneEasings.iOSStandard)) + fadeIn(tween(160)),
+            exit = shrinkHorizontally(shrinkTowards = Alignment.End, animationSpec = tween(170, easing = PhoneEasings.iOSStandard)) + fadeOut(tween(110)),
+        ) {
+            Row(
+                Modifier.fillMaxSize().clip(ShapePill).background(colors.surfaceContainerHigh)
+                    .padding(start = 12.dp, end = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(Icons.Outlined.Search, null, tint = colors.secondary, modifier = Modifier.size(18.dp))
+                Box(Modifier.weight(1f).padding(start = 8.dp)) {
+                    if (query.isEmpty()) Text("Search", style = MaterialTheme.typography.bodySmall, color = colors.secondary)
+                    BasicTextField(
+                        value = query,
+                        onValueChange = onQueryChange,
+                        textStyle = MaterialTheme.typography.bodySmall.copy(color = colors.onBackground),
+                        cursorBrush = SolidColor(colors.primary),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().focusRequester(focusRequester)
+                            .semantics { contentDescription = "Search chats and projects" },
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SidebarDestination(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = MaterialTheme.colorScheme
+    Row(
+        modifier.heightIn(min = 48.dp).clip(MaterialTheme.shapes.large)
+            .background(colors.surfaceContainerHigh.copy(alpha = 0.72f)).clickable(onClick = onClick)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Icon(icon, null, tint = colors.onSurfaceVariant, modifier = Modifier.size(20.dp))
+        Text(label, style = MaterialTheme.typography.labelLarge, color = colors.onBackground, modifier = Modifier.weight(1f))
+        Text(value, style = MaterialTheme.typography.labelMedium, color = colors.tertiary)
     }
 }
 
@@ -683,7 +878,7 @@ private fun ChatRow(
         // Three-dot overflow: pin / move / archive / delete (also reachable via long-press).
         val menuInteraction = remember { MutableInteractionSource() }
         Box(
-            Modifier.size(32.dp).pressFeedback(menuInteraction, pressedScale = 0.85f).clip(MaterialTheme.shapes.extraSmall)
+            Modifier.size(32.dp).pressFeedback(menuInteraction, pressedScale = 0.95f).clip(MaterialTheme.shapes.extraSmall)
                 .clickable(interactionSource = menuInteraction, indication = ripple(bounded = false, radius = 18.dp), onClick = onMenu),
             contentAlignment = Alignment.Center,
         ) {

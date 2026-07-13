@@ -11,13 +11,18 @@ data class AgentConfig(
     val maxSteps: Int = 200,
     /** AGENTS.md / CLAUDE.md contents discovered by :app, injected into the system prompt. */
     val projectInstructions: List<String> = emptyList(),
-    /** Skill name+description for progressive disclosure (bodies loaded on demand). */
-    val skills: List<SkillInfo> = emptyList(),
+    val mcpInstructions: List<String> = emptyList(),
     /** Stable id used for OpenAI-family prompt caching (Anthropic caching is automatic). */
     val sessionId: String? = null,
 )
 
-data class SkillInfo(val name: String, val description: String)
+data class SkillInfo(
+    val name: String,
+    val description: String,
+    val location: String = "",
+    val license: String = "",
+    val compatibility: String = "",
+)
 
 /**
  * Per-turn model + effort, resolved fresh each turn so the model can switch mid-session.

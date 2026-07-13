@@ -1,8 +1,8 @@
 # PhoneCode Privacy Policy
 
-_Last updated: 10 July 2026_
+_Last updated: 13 July 2026_
 
-This Privacy Policy explains how PhoneCode handles data. PhoneCode is an on-device AI coding client published by Deyan Todorov. The developer does not operate a PhoneCode backend and does not receive your prompts, files, credentials, or usage data.
+This Privacy Policy explains how PhoneCode handles data. PhoneCode is an on-device AI coding client published by Deyan Todorov. The developer does not operate a general-purpose PhoneCode backend. A narrowly scoped reporting endpoint receives AI-output reports that you deliberately submit in the app.
 
 ## 1. Data PhoneCode keeps on your device
 
@@ -10,7 +10,7 @@ PhoneCode stores the following locally so the app can work:
 
 - API keys, Git credentials, and third-party sign-in tokens, encrypted with the Android Keystore. If secure storage is unavailable, PhoneCode does not save credentials.
 - Projects, workspace files, linked-folder references, chat history, provider configuration, and app settings.
-- An optional Alpine Linux environment and packages you install.
+- A bundled Alpine Linux environment and packages installed by you or the agent.
 
 Android cloud backup is disabled for PhoneCode. You can create a manual export of supported chats and settings. Manual exports are not encrypted, so store and share them carefully. They do not contain API keys or sign-in credentials.
 
@@ -35,24 +35,31 @@ Depending on the features you use, PhoneCode may connect directly to:
 - Git hosts to clone, fetch, pull, or push repositories.
 - DuckDuckGo or a model provider's search service for searches requested by you or the agent.
 - models.dev to refresh public provider and model metadata. Prompts and workspace files are not included in this request.
-- Alpine Linux repositories and any package source you add to install software inside the optional Linux environment.
+- Alpine Linux repositories and package sources used by `apk`, `pip`, `npm`, or other tools when you or the agent installs software.
 - MCP servers or custom endpoints you configure.
+- dttdrv.xyz when you deliberately submit an AI-output report.
 
 The receiving service can see normal network information such as your IP address and request metadata. Its own privacy policy applies.
 
 ## 5. Data the developer collects
 
-PhoneCode contains no advertising SDK, analytics, telemetry, or remote crash-reporting service. The developer does not receive or sell personal data from the app. User-directed transfers to third-party services are described above.
+PhoneCode contains no advertising SDK, analytics, telemetry, or remote crash-reporting service. The developer does not sell personal data from the app.
+
+If you choose Report AI response and tap Send, PhoneCode sends the selected category, an optional note you write, the app version, and the platform to dttdrv.xyz. It never attaches the AI response, your prompt, files, credentials, tool activity, chat history, provider or model identifiers, or a device identifier. Reports are stored in a private Cloudflare D1 database and are used to investigate harmful output and improve filtering and moderation. Reports older than 90 days are deleted during subsequent report processing.
+
+To limit abuse, the reporting endpoint converts the connecting IP address into a salted hash that changes daily and stores that hash with a request counter and timestamps. It does not store the raw IP address. Rate-limit records older than 48 hours are deleted during subsequent report processing. Cloudflare processes ordinary network and edge request metadata as the hosting provider under its own terms and privacy practices.
 
 ## 6. Security
 
-Credentials are stored using Android Keystore-backed encryption and are excluded from manual exports. Network connections use HTTPS where supported by the service. Custom endpoints and software installed by the agent are under your control and may have different security properties. No security measure is perfect; protect your device and revoke provider credentials if you believe they were exposed.
+Credentials are stored using Android Keystore-backed encryption and are excluded from manual exports. Network connections use HTTPS where supported by the service. Custom endpoints and software installed in the local development environment are under your control and may have different security properties. PRoot provides Linux compatibility, not a VM or security sandbox. Installed software can access the workspace and runtime directories mounted into that environment and can use PhoneCode's network access. No security measure is perfect; protect your device and revoke provider credentials if you believe they were exposed.
 
 ## 7. Retention and deletion
 
-Local data remains until you delete it in PhoneCode, clear the app's storage, or uninstall the app. Unlinking a folder removes PhoneCode's saved access but does not delete that folder. Uninstalling PhoneCode does not delete remote repositories, provider records, or third-party accounts.
+Local data remains until you delete it in PhoneCode, clear the app's storage, or uninstall the app. Unlinking a folder removes PhoneCode's saved access but does not delete that folder. Uninstalling PhoneCode does not delete remote repositories, provider records, third-party accounts, or a report you already submitted.
 
-To access or delete data held by an AI provider, Git host, search service, MCP server, or package source, use that service's account and privacy controls. PhoneCode has no account of its own, so there is no PhoneCode account to delete.
+A successful report displays a reference you can include in an early-deletion or other privacy request to the developer.
+
+To access or delete data held by an AI provider, Git host, search service, package source, or MCP server, use that service's account and privacy controls. PhoneCode has no account of its own, so there is no PhoneCode account to delete.
 
 ## 8. Children
 

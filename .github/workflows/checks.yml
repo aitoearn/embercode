@@ -24,9 +24,25 @@ jobs:
       - name: Verify vendored artifacts
         run: shasum -a 256 --check VENDORED_CHECKSUMS
       - name: Test and lint
-        run: ./gradlew --no-daemon test lintDebug
-      - name: Build Play artifacts
-        run: ./gradlew --no-daemon :app:lintRelease :app:assembleRelease :app:bundleRelease
+        run: ./gradlew --no-daemon test lintDebug :app:verifyLegalInventory
+      - name: Build development artifact
+        run: ./gradlew --no-daemon :app:assembleDebug :app:lintRelease
+      - name: Verify Play release gate
+        shell: bash
+        run: |
+          if ./gradlew --no-daemon :app:verifyPlayReleaseBoundary; then
+            echo "Play release gate unexpectedly passed before the VM runtime landed"
+            exit 1
+          fi
+      - name: Verify Play execution boundary
+        shell: bash
+        run: |
+          if grep -RInE --include='*.kt' --include='*.java' \
+            'dalvik\.system\.|DexClassLoader|InMemoryDexClassLoader|PathClassLoader|DexFile|URLClassLoader|PackageInstaller|REQUEST_INSTALL_PACKAGES|ACTION_INSTALL_PACKAGE|application/vnd\.android\.package-archive|/system/bin/(sh|toybox)' \
+            app/src/main agent/src/main tools/src/main; then
+            echo "Forbidden Android runtime loader or host shell fallback found"
+            exit 1
+          fi
       - name: Verify 16 KB compatibility
         shell: bash
         run: |
@@ -40,4 +56,4 @@ jobs:
               fi
             done < <(readelf -lW "$file" | awk '$1 == "LOAD" { print $NF }')
           done
-          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 app/build/outputs/apk/release/app-release-unsigned.apk
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -c -P 16 -v 4 app/build/outputs/apk/debug/app-debug.apk

@@ -47,8 +47,12 @@ interface Tool {
 
 /** Name-indexed set of tools available to the agent. */
 class ToolRegistry(tools: List<Tool>) {
-    private val byName: Map<String, Tool> = tools.associateBy { it.name }
+    @Volatile private var byName: Map<String, Tool> = tools.associateBy { it.name }
 
     fun get(name: String): Tool? = byName[name]
     fun all(): List<Tool> = byName.values.toList()
+    fun replace(tools: List<Tool>) {
+        byName = tools.associateBy { it.name }
+    }
+    fun snapshot(): ToolRegistry = ToolRegistry(all())
 }

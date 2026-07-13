@@ -72,7 +72,6 @@ class AgentLoopTest {
     private fun config(
         mode: AgentMode = AgentMode.BUILD,
         maxSteps: Int = 200,
-        skills: List<SkillInfo> = emptyList(),
         instructions: List<String> = emptyList(),
     ) = AgentConfig(
         model = "m",
@@ -80,7 +79,6 @@ class AgentLoopTest {
         environment = AgentEnvironment(workspacePath = "/ws"),
         maxSteps = maxSteps,
         projectInstructions = instructions,
-        skills = skills,
     )
 
     private fun loop(
@@ -125,6 +123,44 @@ class AgentLoopTest {
         val secondMsgs = provider.requests[1].messages
         assertTrue(secondMsgs.any { m -> m.parts.any { it is MessagePart.ToolCall } })
         assertTrue(secondMsgs.any { m -> m.parts.any { it is MessagePart.ToolResult } })
+    }
+
+    @Test fun runningLoopSeesRegistryAndMcpInstructionUpdatesOnNextStep() = runTest {
+        val provider = ScriptedProvider(
+            listOf(
+                toolTurn(Triple(0, "c1", "bootstrap")),
+                toolTurn(Triple(0, "c2", "late")),
+                finalText,
+            ),
+        )
+        val late = RecordingTool("late")
+        val registry = ToolRegistry(emptyList())
+        var instructions = emptyList<String>()
+        val bootstrap = object : Tool {
+            override val name = "bootstrap"
+            override val description = "bootstrap"
+            override val parameters = JsonObject(emptyMap())
+            override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult {
+                instructions = listOf("New server instructions")
+                registry.replace(listOf(this, late))
+                return ToolResult("updated")
+            }
+        }
+        registry.replace(listOf(bootstrap))
+
+        AgentLoop(
+            provider,
+            registry,
+            FakeContext(),
+            config(),
+            toolProvider = { registry },
+            mcpInstructionsProvider = { instructions },
+        ).run(emptyList(), "update tools").toList()
+
+        assertFalse(provider.requests[0].tools.any { it.name == "late" })
+        assertTrue(provider.requests[1].tools.any { it.name == "late" })
+        assertTrue(provider.requests[1].system.orEmpty().contains("New server instructions"))
+        assertEquals(1, late.executions)
     }
 
     @Test fun checkpointsHistoryBeforeAndAfterToolExecution() = runTest {
@@ -332,11 +368,10 @@ class AgentLoopTest {
         assertEquals("model-B", provider.requests[1].model)
     }
 
-    @Test fun systemPromptContainsBaseToolsInstructionsSkillsAndPlanReminder() = runTest {
+    @Test fun systemPromptContainsBaseToolsInstructionsAndPlanReminder() = runTest {
         val provider = ScriptedProvider(listOf(listOf(StreamEvent.TextDelta("ok"), StreamEvent.Done(StopReason.END_TURN))))
         val cfg = config(
             mode = AgentMode.PLAN,
-            skills = listOf(SkillInfo("pdf", "work with PDF files")),
             instructions = listOf("This repo uses 4-space indentation."),
         )
         loop(provider, listOf(RecordingTool("read", snippet = "read a file by path")), cfg = cfg).run(emptyList(), "x").toList()
@@ -345,7 +380,6 @@ class AgentLoopTest {
         assertTrue(system.contains("- read: read a file by path"))
         assertTrue(system.contains("Workspace: /ws"))
         assertTrue(system.contains("This repo uses 4-space indentation."))
-        assertTrue(system.contains("pdf: work with PDF files"))
         assertTrue(system.contains("PLAN MODE ACTIVE"))
     }
 

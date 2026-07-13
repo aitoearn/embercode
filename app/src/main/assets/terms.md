@@ -1,14 +1,14 @@
 # PhoneCode Terms of Service
 
-_Last updated: 10 July 2026_
+_Last updated: 13 July 2026_
 
 These Terms govern your use of PhoneCode, an on-device AI coding client published by Deyan Todorov. By installing or using PhoneCode, you agree to these Terms. If you do not agree, do not use the app.
 
 ## 1. The service
 
-PhoneCode lets an AI agent work with code and files on your device. It can use a permanent app workspace, access folders you explicitly link, run commands, use Git, search the web, connect to tools, and install software inside an optional Linux environment.
+PhoneCode lets an AI agent work with code and files on your device. It can use a permanent app workspace, access folders you explicitly link, run commands, use Git, search the web, connect to tools, and install software inside the local Linux environment.
 
-PhoneCode does not include an AI model or a developer-operated backend. You connect a supported or custom third-party AI provider using your own account, sign-in, or API key. There is no PhoneCode account.
+PhoneCode does not include an AI model or a general-purpose developer-operated backend. You connect a supported or custom third-party AI provider using your own account, sign-in, or API key. The developer operates only a narrowly scoped endpoint for AI-output reports you deliberately submit. There is no PhoneCode account.
 
 ## 2. Third-party accounts and charges
 
@@ -30,11 +30,11 @@ You may not use PhoneCode to violate the law, infringe another person's rights, 
 
 PhoneCode does not verify or guarantee generated output. Output may contain errors, vulnerabilities, incompatible code, or material subject to third-party rights or licenses. Test and review it before relying on it.
 
-Software installed in the optional Linux environment comes from third parties. You are responsible for choosing package sources, reviewing licenses, and evaluating security. PhoneCode does not guarantee that a package is safe, available, or compatible.
+Software installed in the local Linux environment comes from third parties and may run build or lifecycle scripts. You are responsible for choosing package sources, reviewing licenses, and evaluating security. PRoot is a compatibility layer, not a VM or security sandbox. Installed software can access directories mounted into the environment and use PhoneCode's network access. PhoneCode does not guarantee that a package is safe, available, or compatible.
 
 ## 6. Privacy
 
-The [PhoneCode Privacy Policy](privacy.md) explains local storage, linked-folder access, third-party transfers, retention, security, and deletion. It forms part of these Terms.
+The [PhoneCode Privacy Policy](privacy.md) explains local storage, linked-folder access, AI-output reports, third-party transfers, retention, security, and deletion. It forms part of these Terms.
 
 ## 7. Age
 
