@@ -40,6 +40,7 @@ import { HostChooserModal, useHostChooser } from "@/hosts/host-chooser";
 import { getIsElectronRuntime, useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
 import { HorizontalScrollProvider } from "@/contexts/horizontal-scroll-context";
+import { PhonecodeEmbeddedBridge } from "@/embedded/PhonecodeEmbeddedBridge";
 import { SessionProvider } from "@/contexts/session-context";
 import { SidebarCalloutProvider } from "@/contexts/sidebar-callout-context";
 import { ToastProvider } from "@/contexts/toast-context";
@@ -881,6 +882,7 @@ function RootAppTree() {
           <RuntimeProviders>
             <AppShell />
           </RuntimeProviders>
+          <PhonecodeEmbeddedBridge />
         </RootProviders>
       </View>
     </GestureHandlerRootView>
