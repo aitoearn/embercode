@@ -34,3 +34,7 @@ app/screenshots/
 /docs/
 /.claude/
 .worktrees/
+
+# remote-ui 构建产物（postinstall / build:remote-ui-deps 生成）
+packages/remote-ui/*/dist/
+packages/remote-ui/*/*.tsbuildinfo
