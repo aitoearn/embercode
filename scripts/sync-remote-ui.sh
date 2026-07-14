@@ -126,6 +126,8 @@ APP_PATHS=(
   "src/dictation"
   "src/diagnostics"
   "src/components"
+  "src/types"
+  "src/voice"
 )
 
 for rel in "${APP_PATHS[@]}"; do

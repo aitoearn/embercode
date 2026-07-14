@@ -66,6 +66,17 @@ extensions.configure<com.facebook.react.ReactSettingsExtension> {
 extensions.configure<expo.modules.plugin.ExpoAutolinkingSettingsExtension> {
     // Gradle 根 = JS 工程根
     projectRoot = settings.rootDir
+    // expo-updates 由 @getpaseo/app 的 package.json 传递依赖带入 node_modules，
+    // 但本项目未采用 EAS Update 原生更新流程。
+    // ExpoUpdatesPlugin 计算 projectRoot 时假定标准 `<repo>/android` 目录结构（会取
+    // rootProject.projectDir 的上一级），而本仓库无 android/ 子目录、Gradle 根即仓库根，
+    // 导致其反算出的 projectRoot 指向仓库上一级目录，运行 node 时找不到 node_modules 里的
+    // expo-updates（`Cannot find module 'expo-updates/package.json'`）。
+    // 显式排除该包，避免其 Gradle 插件被错误应用。
+    // 注意：ExpoAutolinkingSettingsExtension.exclude 底层用空字符串拼接多个包名再传给
+    // expo-modules-autolinking CLI（一个已知的实现限制），导致同时排除多个包名会失效，
+    // 因此这里只能排除一个包名。expo-dev-client 的 gradle 插件目前未观察到构建失败，暂不排除。
+    exclude = listOf("expo-updates")
     useExpoModules()
 }
 
