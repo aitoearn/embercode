@@ -11,7 +11,7 @@ import expo.modules.ReactActivityDelegateWrapper
 
 /**
  * 远程 RN / Expo 宿主 Activity。
- * 加载根目录 `index.js` 注册的 `PhoneCodeRemote`（@phonecode/remote-ui embedded）。
+ * 加载 expo-router 注册的 main（全量 @getpaseo/app）。
  */
 class RemoteRnActivity : ReactActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -24,7 +24,7 @@ class RemoteRnActivity : ReactActivity() {
         super.onCreate(savedInstanceState)
     }
 
-    override fun getMainComponentName(): String = "PhoneCodeRemote"
+    override fun getMainComponentName(): String = "main"
 
     override fun createReactActivityDelegate(): ReactActivityDelegate =
         ReactActivityDelegateWrapper(
