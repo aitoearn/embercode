@@ -29,17 +29,32 @@ fun RemoteSummariesPayload.toUnifiedRows(): List<UnifiedSessionRow> =
         val state = runCatching {
             RemoteConnectionState.valueOf(host.connectionState)
         }.getOrDefault(RemoteConnectionState.Unknown)
-        host.sessions.map { session ->
-            UnifiedSessionRow(
-                origin = SessionOrigin.REMOTE,
-                id = session.id,
-                title = session.title.ifBlank { session.id },
-                updatedAt = session.updatedAt,
-                preview = session.preview,
-                hostId = host.hostId,
-                hostLabel = host.hostLabel,
-                connectionState = state,
+        if (host.sessions.isEmpty()) {
+            listOf(
+                UnifiedSessionRow(
+                    origin = SessionOrigin.REMOTE,
+                    id = host.hostId,
+                    title = host.hostLabel.ifBlank { host.hostId },
+                    updatedAt = 0L,
+                    preview = "远程主机",
+                    hostId = host.hostId,
+                    hostLabel = host.hostLabel,
+                    connectionState = state,
+                ),
             )
+        } else {
+            host.sessions.map { session ->
+                UnifiedSessionRow(
+                    origin = SessionOrigin.REMOTE,
+                    id = session.id,
+                    title = session.title.ifBlank { session.id },
+                    updatedAt = session.updatedAt,
+                    preview = session.preview,
+                    hostId = host.hostId,
+                    hostLabel = host.hostLabel,
+                    connectionState = state,
+                )
+            }
         }
     }
 

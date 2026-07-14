@@ -115,6 +115,14 @@ react {
     reactNativeDir = file("../node_modules/react-native")
     codegenDir = file("../node_modules/@react-native/codegen")
     cliFile = file("../node_modules/react-native/cli.js")
+    // settings.gradle.kts 已写入 systemProp；缺省再回退常见路径
+    nodeExecutableAndArgs.set(
+        listOf(
+            System.getProperty("nodejs.executable")
+                ?: System.getenv("NODE_BINARY")
+                ?: "/usr/local/bin/node",
+        ),
+    )
     autolinkLibrariesWithApp()
 }
 

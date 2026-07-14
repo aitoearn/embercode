@@ -48,6 +48,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
@@ -116,6 +117,19 @@ import dev.phonecode.app.data.Project
 import dev.phonecode.app.data.SessionMeta
 import dev.phonecode.app.data.SkillStatus
 import dev.phonecode.app.data.ThemeMode
+import dev.phonecode.app.remote.OpenRemoteRequest
+import dev.phonecode.app.remote.RemoteFeature
+import dev.phonecode.app.remote.RemoteSummaryCache
+import dev.phonecode.app.remote.RnBridge
+import dev.phonecode.app.remote.SessionFacade
+import dev.phonecode.app.remote.UnifiedSessionRow
+import java.io.File
+import androidx.activity.ComponentActivity
+import androidx.activity.result.ActivityResult
+import android.app.Activity
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.foundation.layout.PaddingValues
 import dev.phonecode.app.ui.chat.ChatScreen
 import dev.phonecode.app.ui.onboarding.OnboardingScreen
 import dev.phonecode.app.ui.components.PcButton
@@ -248,6 +262,26 @@ fun PhoneCodeApp() {
             }
             projectPickFromOnboarding = false
         }
+        val context = LocalContext.current
+        val remoteCache = remember(context) {
+            RemoteSummaryCache(File(context.filesDir, "remote-summaries.json"))
+        }
+        var remoteRows by remember { mutableStateOf(remoteCache.load()) }
+        val remoteLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.StartActivityForResult(),
+        ) { result: ActivityResult ->
+            if (result.resultCode != Activity.RESULT_OK) return@rememberLauncherForActivityResult
+            val rows = RnBridge.parseResult(result.data)
+            if (rows.isNotEmpty()) {
+                remoteCache.replaceAll(rows)
+                remoteRows = rows
+            }
+        }
+        val openRemotePair: () -> Unit = {
+            if (RemoteFeature.isEnabled()) {
+                remoteLauncher.launch(RnBridge.intent(context, OpenRemoteRequest.Pair))
+            }
+        }
         LaunchedEffect(drawerState.targetValue) {
             if (drawerState.targetValue == DrawerValue.OPEN) focusManager.clearFocus()
         }
@@ -351,6 +385,8 @@ fun PhoneCodeApp() {
                             vm = vm,
                             width = drawerWidth,
                             collapsed = collapsedProjects,
+                            remoteEnabled = RemoteFeature.isEnabled(),
+                            remoteRows = remoteRows,
                             onToggleCollapse = { id ->
                                 collapsedProjects = if (id in collapsedProjects) collapsedProjects - id else collapsedProjects + id
                             },
@@ -358,6 +394,18 @@ fun PhoneCodeApp() {
                             onNewProject = {
                                 closeDrawer()
                                 projectPicker.launch(null)
+                            },
+                            onOpenRemotePair = {
+                                closeDrawer()
+                                openRemotePair()
+                            },
+                            onOpenRemoteHost = { hostId ->
+                                closeDrawer()
+                                if (RemoteFeature.isEnabled()) {
+                                    remoteLauncher.launch(
+                                        RnBridge.intent(context, OpenRemoteRequest.Host(hostId)),
+                                    )
+                                }
                             },
                             onOpenSettings = { closeDrawer(); settingsInitial = "home"; route = "settings" },
                             onOpenSkills = { closeDrawer(); route = "skills" },
@@ -399,9 +447,13 @@ private fun Sidebar(
     vm: ChatViewModel,
     width: androidx.compose.ui.unit.Dp,
     collapsed: Set<String>,
+    remoteEnabled: Boolean,
+    remoteRows: List<UnifiedSessionRow>,
     onToggleCollapse: (String) -> Unit,
     onOpenChat: () -> Unit,
     onNewProject: () -> Unit,
+    onOpenRemotePair: () -> Unit,
+    onOpenRemoteHost: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSkills: () -> Unit,
     onOpenMcp: () -> Unit,
@@ -457,6 +509,12 @@ private fun Sidebar(
     val archived = remember(filtered) { filtered.filter { it.archived } }
     val byProject = remember(filtered) { filtered.filter { !it.archived && it.projectId != null }.groupBy { it.projectId } }
     val loose = remember(filtered) { filtered.filter { !it.pinned && !it.archived && it.projectId == null } }
+    val remoteHosts = remember(remoteRows) {
+        SessionFacade().merge(
+            localMeta = emptyList(),
+            remoteRows = remoteRows,
+        ).remote
+    }
 
     @Composable
     fun SessionItem(meta: SessionMeta, indent: androidx.compose.ui.unit.Dp) {
@@ -503,6 +561,71 @@ private fun Sidebar(
             ) {
             item {
                 Text("Projects", style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant, modifier = Modifier.padding(start = 12.dp, top = 14.dp, bottom = 6.dp))
+            }
+            if (remoteEnabled) {
+                item(key = "remote_section") {
+                    Text(
+                        "远程",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = colors.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 12.dp, top = 8.dp, bottom = 6.dp),
+                    )
+                }
+                item(key = "remote_pair") {
+                    Row(
+                        Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium).clickable(onClick = onOpenRemotePair)
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(Icons.Outlined.QrCodeScanner, null, tint = colors.secondary, modifier = Modifier.size(19.dp))
+                        Text("配对远程主机", style = MaterialTheme.typography.bodyMedium, color = colors.onBackground)
+                    }
+                }
+                if (remoteHosts.isEmpty()) {
+                    item(key = "remote_empty") {
+                        Text(
+                            "尚未连接远程主机",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.secondary,
+                            modifier = Modifier.padding(start = 12.dp, bottom = 8.dp),
+                        )
+                    }
+                } else {
+                    items(remoteHosts.size, key = { remoteHosts[it].listKey }) { index ->
+                        val row = remoteHosts[index]
+                        Row(
+                            Modifier.fillMaxWidth().clip(MaterialTheme.shapes.medium)
+                                .clickable {
+                                    val hostId = row.hostId
+                                    if (!hostId.isNullOrBlank()) onOpenRemoteHost(hostId)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Icon(Icons.Outlined.Cloud, null, tint = colors.secondary, modifier = Modifier.size(19.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    row.hostLabel?.takeIf { it.isNotBlank() } ?: row.title,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = colors.onBackground,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                                if (row.preview.isNotBlank() || row.title.isNotBlank()) {
+                                    Text(
+                                        row.preview.ifBlank { row.title },
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = colors.secondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if (state.projects.isEmpty() && query.isBlank()) {
                 item(key = "projects_empty") {

@@ -54,7 +54,7 @@ class PhoneCodeApplication : Application(), ReactApplication {
             object : DefaultReactNativeHost(this) {
                 override fun getPackages(): List<ReactPackage> =
                     PackageList(this).packages.apply {
-                        // 无法 autolink 的包可在此手动 add
+                        add(dev.phonecode.app.remote.PhoneCodeBridgePackage())
                     }
 
                 override fun getJSMainModuleName(): String = "index"
