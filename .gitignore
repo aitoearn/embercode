@@ -8,6 +8,11 @@ captures/
 .externalNativeBuild
 .cxx
 local.properties
+node_modules/
+# Kotlin JVM 模块编译输出（勿入库）
+agent/bin/
+provider/bin/
+tools/bin/
 /.superpowers/
 /.tooling/
 *.apk

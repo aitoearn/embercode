@@ -1,0 +1,11 @@
+{
+  "name": "PhoneCode",
+  "slug": "phonecode",
+  "version": "0.3.0",
+  "android": {
+    "package": "dev.phonecode"
+  },
+  "extra": {
+    "embeddedHost": "phonecode"
+  }
+}

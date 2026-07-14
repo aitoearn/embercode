@@ -1,11 +1,14 @@
 [versions]
-agp = "9.2.0"
-kotlin = "2.3.21"
-coreKtx = "1.19.0"
-lifecycle = "2.11.0"
-activityCompose = "1.12.3"
+# 对齐 paseo / Expo 54 / RN 0.81：单工具链走 S2（宿主降级，不用 AGP 9）
+agp = "8.11.0"
+kotlin = "2.1.20"
+# AndroidX 需与 AGP 8.11 / compileSdk 36 兼容（1.19 / Lifecycle 2.11 要求 AGP 9.1+）
+coreKtx = "1.16.0"
+lifecycle = "2.9.1"
+activityCompose = "1.10.1"
+# 需含 scrollableArea；与 core/lifecycle 分开钉版本，避免被 AndroidX 1.19 拖到 AGP 9
 composeBom = "2026.06.00"
-navigation = "2.9.8"
+navigation = "2.9.0"
 coroutines = "1.9.0"
 serialization = "1.7.3"
 okhttp = "4.12.0"
@@ -58,6 +61,7 @@ androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-co
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

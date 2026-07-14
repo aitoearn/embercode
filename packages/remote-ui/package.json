@@ -1,0 +1,19 @@
+{
+  "name": "@phonecode/remote-ui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PhoneCode 远程会话 UI（paseo 协议/客户端 + 精简 RN 页面）。平台无关，供 Android / iOS 壳复用。",
+  "license": "UNLICENSED",
+  "scripts": {
+    "sync": "../../scripts/sync-remote-ui.sh"
+  },
+  "comment_workspaces": "根 package.json 已挂 Expo 54 + AsyncStorage 等；全量 app workspaces（含 @getpaseo/expo-two-way-audio）待 path 私有依赖后再启用",
+  "peerDependencies": {
+    "react": "*",
+    "react-native": "*",
+    "expo": "*"
+  },
+  "peerDependenciesMeta": {
+    "expo": { "optional": false }
+  }
+}

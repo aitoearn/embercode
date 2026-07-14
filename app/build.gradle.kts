@@ -2,8 +2,10 @@ import java.security.MessageDigest
 
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.compose.compiler)
+    id("com.facebook.react")
 }
 
 val releaseStoreFile = providers.gradleProperty("PHONECODE_RELEASE_STORE_FILE")
@@ -21,7 +23,8 @@ val releaseKeyPassword = providers.gradleProperty("PHONECODE_RELEASE_KEY_PASSWOR
 
 android {
     namespace = "dev.phonecode.app"
-    compileSdk = 37
+    // AGP 8.11 与 Expo 54 常见 compileSdk 对齐；暂不追 37
+    compileSdk = 36
     buildToolsVersion = "36.0.0"
 
     defaultConfig {
@@ -47,6 +50,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Debug 默认打开远程 RN，便于 Spike / 联调；Release 仍由 -Pphonecode.remoteRn 控制
+            buildConfigField("boolean", "REMOTE_RN_ENABLED", "true")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -55,6 +62,11 @@ android {
                 "proguard-rules.pro",
             )
             signingConfig = signingConfigs.findByName("release")
+            buildConfigField(
+                "boolean",
+                "REMOTE_RN_ENABLED",
+                providers.gradleProperty("phonecode.remoteRn").orElse("false").get(),
+            )
         }
     }
 
@@ -77,13 +89,11 @@ android {
     buildFeatures {
         aidl = true
         compose = true
+        buildConfig = true
+        resValues = true
     }
 
-    externalNativeBuild {
-        ndkBuild {
-            path = file("src/main/jni/Android.mk")
-        }
-    }
+    // PRoot/QEMU 的 ndkBuild 已迁到 :runtime-native，本模块留给 RN New Arch 的 CMake。
 
     androidResources {
         noCompress += "rootfs"
@@ -99,10 +109,25 @@ android {
     }
 }
 
+// React Native：工程根即仓库根（无 android/ 子目录）
+react {
+    root = file("..")
+    reactNativeDir = file("../node_modules/react-native")
+    codegenDir = file("../node_modules/@react-native/codegen")
+    cliFile = file("../node_modules/react-native/cli.js")
+    autolinkLibrariesWithApp()
+}
+
 dependencies {
     implementation(project(":agent"))
     implementation(project(":provider"))
     implementation(project(":tools"))
+    // QEMU spawn 原生库（ndkBuild）；与 RN CMake 分模块，避免 CXX1400
+    implementation(project(":runtime-native"))
+
+    // React Native 运行时（版本由 RNGP 对齐 node_modules）
+    implementation("com.facebook.react:react-android")
+    implementation("com.facebook.react:hermes-android")
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)

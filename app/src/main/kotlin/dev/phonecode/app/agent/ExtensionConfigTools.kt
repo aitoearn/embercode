@@ -102,8 +102,11 @@ internal class ExtensionConfigWriteTool(
 
     override suspend fun execute(args: JsonObject, context: ToolContext): ToolResult = when (args.string("action")) {
         "upsert_mcp" -> upsertMcp(args)
-        "remove_mcp" -> repository.removeMcpServer(args.requiredName() ?: return ToolResult("extension_write: name is required", true))
-            .fold({ ToolResult("MCP server removed") }, { ToolResult("extension_write: ${it.message}", true) })
+        "remove_mcp" -> {
+            val name = args.requiredName() ?: return ToolResult("extension_write: name is required", true)
+            repository.removeMcpServer(name)
+                .fold({ ToolResult("MCP server removed") }, { ToolResult("extension_write: ${it.message}", true) })
+        }
         "set_mcp_enabled" -> {
             val name = args.requiredName() ?: return ToolResult("extension_write: name is required", true)
             val enabled = args.boolean("enabled") ?: return ToolResult("extension_write: enabled is required", true)

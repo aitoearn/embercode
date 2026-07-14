@@ -1,10 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <application>
-        <service
-            android:name=".runtime.IsolationProbeService"
-            android:exported="false"
-            android:isolatedProcess="true"
-            android:process=":isolation_probe" />
+<!-- Debug：允许 Metro cleartext；并临时导出 RemoteRnActivity 便于 adb 联调 Spike -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application
+        android:usesCleartextTraffic="true"
+        tools:targetApi="28">
+        <activity
+            android:name=".remote.RemoteRnActivity"
+            android:exported="true"
+            tools:replace="android:exported" />
     </application>
 </manifest>
