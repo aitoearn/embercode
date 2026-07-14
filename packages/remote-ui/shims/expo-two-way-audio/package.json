@@ -1,0 +1,7 @@
+{
+  "name": "@getpaseo/expo-two-way-audio",
+  "version": "0.0.0-phonecode-stub",
+  "private": true,
+  "main": "index.js",
+  "react-native": "index.js"
+}

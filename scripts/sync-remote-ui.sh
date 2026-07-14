@@ -2,6 +2,9 @@
 # 从外部 paseo 按白名单同步到 packages/remote-ui（跨平台共享包 @phonecode/remote-ui）。
 # 不拷贝 server / desktop / website / cli，也不生成 android/ ios/ 原生工程。
 #
+# PhoneCode 当前使用 packages/remote-ui/shims/expo-two-way-audio 作为语音 stub，
+# 不通过本脚本同步真实 @getpaseo/expo-two-way-audio 原生模块（后置接入）。
+#
 # 用法:
 #   PASEO_ROOT=/path/to/paseo ./scripts/sync-remote-ui.sh
 # 默认 PASEO_ROOT=/Users/lisq/ai/coding/ori_paseo/paseo
