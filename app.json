@@ -2,10 +2,23 @@
   "name": "PhoneCode",
   "slug": "phonecode",
   "version": "0.3.0",
+  "scheme": "phonecode",
   "android": {
     "package": "dev.phonecode"
   },
+  "plugins": [
+    "expo-router",
+    [
+      "expo-camera",
+      {
+        "cameraPermission": "允许 PhoneCode 使用相机扫描远程配对二维码。"
+      }
+    ]
+  ],
   "extra": {
-    "embeddedHost": "phonecode"
+    "embeddedHost": "phonecode",
+    "router": {
+      "root": "./packages/remote-ui/app/src/app"
+    }
   }
 }
