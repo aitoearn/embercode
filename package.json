@@ -14,7 +14,7 @@
   "scripts": {
     "sync:remote-ui": "./scripts/sync-remote-ui.sh",
     "build:remote-ui-deps": "./scripts/build-remote-ui-deps.sh",
-    "postinstall": "./scripts/patch-rn-gradle-plugin.sh && npm run build:remote-ui-deps",
+    "postinstall": "./scripts/patch-rn-gradle-plugin.sh && npm run build:remote-ui-deps && rm -rf packages/remote-ui/app/node_modules/react-native-svg",
     "start": "react-native start",
     "android": "react-native run-android"
   },
@@ -96,6 +96,7 @@
     "react-dom": "19.1.0",
     "react-native-reanimated": "~4.1.1",
     "react-native-worklets": "0.5.1",
-    "react-native-unistyles": "3.2.5"
+    "react-native-unistyles": "3.2.5",
+    "react-native-svg": "15.12.1"
   }
 }

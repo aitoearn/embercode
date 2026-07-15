@@ -1,0 +1,8 @@
+/** PhoneCode mobile stub：桌面/排程等非远程关键路径占位，避免 Metro 解析失败。 */
+import React from 'react';
+
+export type DesktopIpcInvoker = any;
+
+export async function readDesktopSystemIdleTimeMs(..._args: any[]): Promise<any> {
+  throw new Error('[PhoneCode stub] desktop/electron/idle#readDesktopSystemIdleTimeMs 仅桌面可用');
+}

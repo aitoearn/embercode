@@ -1,0 +1,6 @@
+/** PhoneCode mobile stub：桌面/排程等非远程关键路径占位，避免 Metro 解析失败。 */
+import React from 'react';
+
+export type PairDeviceModalProps = any;
+
+export function PairDeviceModal(_props: any = {}): React.ReactElement | null { return null; }

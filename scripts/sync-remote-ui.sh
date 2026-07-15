@@ -78,6 +78,28 @@ for f in package.json index.ts tsconfig.json app.config.js babel.config.js \
   fi
 done
 
+# PhoneCode 嵌入式宿主不需要 Expo 开发启动器 / EAS Update：同步后剔除，避免 autolink 劫持。
+if [[ -f "${APP_DST}/package.json" ]]; then
+  python3 - "${APP_DST}/package.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as f:
+    pkg = json.load(f)
+deps = pkg.get("dependencies") or {}
+removed = []
+for name in ("expo-dev-client", "expo-updates"):
+    if name in deps:
+        del deps[name]
+        removed.append(name)
+pkg["dependencies"] = deps
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(pkg, f, indent=2, ensure_ascii=False)
+    f.write("\n")
+if removed:
+    print(f"  已从 app/package.json 移除: {', '.join(removed)}")
+PY
+fi
+
 if [[ -d "${APP_SRC}/assets" ]]; then
   rsync -a "${APP_SRC}/assets/" "${APP_DST}/assets/"
 fi
@@ -89,6 +111,8 @@ APP_PATHS=(
   "src/app/welcome.tsx"
   "src/app/sessions.tsx"
   "src/app/new.tsx"
+  "src/app/open-project.tsx"
+  "src/app/settings"
   "src/app/h"
   "src/embedded"
   "src/runtime"
@@ -128,6 +152,14 @@ APP_PATHS=(
   "src/components"
   "src/types"
   "src/voice"
+  "src/workspace-tabs"
+  "src/workspace-pins"
+  "src/workspace"
+  "src/timeline"
+  "src/tool-calls"
+  "src/terminal"
+  "src/file-explorer"
+  "src/assets"
 )
 
 for rel in "${APP_PATHS[@]}"; do
@@ -166,6 +198,13 @@ for drop in \
 do
   rm -rf "${drop}"
 done
+
+# 回填 mobile stub，保证相对路径 import（如 ../desktop/...）与 @/desktop 均可解析
+STUB_SRC="${DEST}/shims/app-src"
+if [[ -d "${STUB_SRC}" ]]; then
+  rsync -a "${STUB_SRC}/" "${APP_DST}/src/"
+  echo "  已回填 shims/app-src → app/src（desktop/schedules 等 stub）"
+fi
 
 COMMIT="unknown"
 BRANCH="unknown"

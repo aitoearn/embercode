@@ -136,7 +136,10 @@ export default function PairScanScreen() {
 
   const navigateToPairedHost = useCallback(
     (serverId: string) => {
-      if (source === "onboarding") {
+      // PhoneCode 嵌入与 onboarding：配对成功进主机根（再由 index 解析到 sessions/open-project）。
+      // 独立 paseo 从设置页扫码会走 /settings/hosts/...，但本仓库未同步 settings 路由树，
+      // source=phonecode/settings 若仍跳 settings 会落到 Unmatched Route（phonecode:///…）。
+      if (source === "onboarding" || source === "phonecode" || source === "settings") {
         router.replace(buildHostRootRoute(serverId));
         return;
       }

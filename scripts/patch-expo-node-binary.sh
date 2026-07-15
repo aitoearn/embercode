@@ -82,6 +82,32 @@ def patch_text(path: Path, text: str) -> str:
         f'?: [{NODE_GROOVY}]',
         text,
     )
+    # Expo exclude 多包名：joinToString(" ") 会变成单个 argv，CLI 只认重复 --exclude
+    if "optionsMap[key] = value.joinToString(\" \")" in text and "repeatedOptions" not in text:
+        text = text.replace(
+            """  /**
+   * Add a list of values as an option to the command.
+   */
+  fun option(key: String, value: List<String>) = apply {
+    optionsMap[key] = value.joinToString(" ")
+  }""",
+            """  /**
+   * Add a list of values as an option to the command.
+   * 每个值单独生成 `--key value`，避免 join 成单个字符串后 CLI 无法识别多包 exclude。
+   */
+  private val repeatedOptions = mutableListOf<Pair<String, String>>()
+
+  fun option(key: String, value: List<String>) = apply {
+    value.forEach { repeatedOptions.add(key to it) }
+  }""",
+        )
+        text = text.replace(
+            """      optionsMap.map { (key, value) -> listOf("--$key", value) }.flatMap { it } +
+      searchPaths""",
+            """      optionsMap.map { (key, value) -> listOf("--$key", value) }.flatMap { it } +
+      repeatedOptions.flatMap { (key, value) -> listOf("--$key", value) } +
+      searchPaths""",
+        )
     if text == original and MARKER not in text:
         # 可能已是其它形式；仅告警
         if '"node"' in text or "'node'" in text:
